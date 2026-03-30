@@ -35,38 +35,18 @@ SSO_LOGIN_URL = (
 )
 
 
-class GarminClient:
-    def __init__(
-        self,
-        email: str,
-        password: str,
-        profile_dir: Optional[Path] = None,
-        headless: bool = False,
-    ):
-        self.email = email
-        self.password = password
-        self.profile_dir = profile_dir or DEFAULT_PROFILE_DIR
-        self.profile_dir.mkdir(parents=True, exist_ok=True)
-        self.headless = headless
-        self._playwright = None
-        self._context: Optional[BrowserContext] = None
-        self._page: Optional[Page] = None
-        self._csrf: Optional[str] = None
-        self._display_name: Optional[str] = None
+class _ChromeEngine:
+    """Browser engine using Playwright + system Chrome."""
 
-    def login(self, timeout_ms: int = 600000) -> bool:
-        self._playwright = sync_playwright().start()
+    def launch(self, profile_dir: Path, headless: bool):
+        """Launch Chrome. Returns (context, page, playwright_instance, None)."""
+        pw = sync_playwright().start()
 
-        # Cloudflare Turnstile blocks headless browsers without valid cookies.
-        # First login must be visible to pass Cloudflare verification.
-        # After that, saved cookies let headless mode work fine.
-        # Check for Garmin cookies (not just the profile directory, which
-        # Chrome creates even on failed logins).
-        cookies_file = self.profile_dir / "Default" / "Cookies"
+        cookies_file = profile_dir / "Default" / "Cookies"
         has_valid_session = cookies_file.exists() and cookies_file.stat().st_size > 1024
-        use_headless = self.headless and has_valid_session
+        use_headless = headless and has_valid_session
 
-        if self.headless and not has_valid_session:
+        if headless and not has_valid_session:
             print("First login requires a visible browser (Cloudflare verification).")
             print("Subsequent runs will be headless automatically.\n")
 
@@ -76,8 +56,8 @@ class GarminClient:
         if use_headless:
             args.append("--headless=new")
 
-        self._context = self._playwright.chromium.launch_persistent_context(
-            user_data_dir=str(self.profile_dir),
+        context = pw.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
             headless=False,
             channel="chrome",
             args=args,
@@ -86,8 +66,138 @@ class GarminClient:
             timezone_id="America/New_York",
         )
 
-        self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
-        self._page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+        page = context.pages[0] if context.pages else context.new_page()
+        page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+
+        return (context, page, pw, None)
+
+    def has_valid_session(self, profile_dir: Path, session_file: Path) -> bool:
+        """Check Chrome cookie file exists and is >1024 bytes."""
+        cookies_file = profile_dir / "Default" / "Cookies"
+        return cookies_file.exists() and cookies_file.stat().st_size > 1024
+
+    def save_session(self, page, session_file: Path):
+        """No-op for Chrome -- persists via browser profile automatically."""
+
+    def close(self, context, playwright, browser_ref):
+        """Close Chrome context and Playwright."""
+        if context:
+            context.close()
+        if playwright:
+            playwright.stop()
+
+
+class _CamoufoxEngine:
+    """Browser engine using Camoufox (custom Firefox) -- bypasses Cloudflare headless."""
+
+    def launch(self, profile_dir: Path, headless: bool, session_file: Path = None):
+        """Launch Camoufox. Returns (context, page, None, browser)."""
+        from camoufox.sync_api import Camoufox
+
+        browser = Camoufox(headless=headless).__enter__()
+        page = browser.new_page()
+        context = page.context
+
+        # Load saved session cookies if available
+        if session_file and session_file.exists():
+            try:
+                session = json.loads(session_file.read_text())
+                saved_at = session.get("saved_at", 0)
+                age_days = (time.time() - saved_at) / 86400
+                if age_days < 364 and session.get("cookies"):
+                    context.add_cookies(session["cookies"])
+                    log.info(
+                        "Loaded %d cookies from session (%.0f days old)",
+                        len(session["cookies"]),
+                        age_days,
+                    )
+            except Exception as e:
+                log.debug("Could not load session: %s", e)
+
+        return (context, page, None, browser)
+
+    def has_valid_session(self, profile_dir: Path, session_file: Path) -> bool:
+        """Check if session JSON file exists with valid cookies."""
+        if not session_file or not session_file.exists():
+            return False
+        try:
+            session = json.loads(session_file.read_text())
+            age_days = (time.time() - session.get("saved_at", 0)) / 86400
+            has_cookies = bool(session.get("cookies"))
+            return has_cookies and age_days < 364
+        except Exception:
+            return False
+
+    def save_session(self, page, session_file: Path):
+        """Save cookies to JSON file."""
+        import os
+
+        if not session_file:
+            return
+        cookies = page.context.cookies()
+        garmin_cookies = [c for c in cookies if "garmin" in c.get("domain", "") or "cloudflare" in c.get("domain", "")]
+        if not garmin_cookies:
+            return
+        session = {"cookies": garmin_cookies, "saved_at": time.time()}
+        fd = os.open(str(session_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(session, f, indent=2)
+        log.info("Session saved: %d cookies to %s", len(garmin_cookies), session_file)
+
+    def close(self, context, playwright, browser_ref):
+        """Close Camoufox browser."""
+        if browser_ref:
+            try:
+                browser_ref.close()
+            except Exception:
+                pass
+
+
+class GarminClient:
+    def __init__(
+        self,
+        email: str,
+        password: str,
+        profile_dir: Optional[Path] = None,
+        headless: bool = False,
+        engine: str = "auto",
+        session_file: Optional[Path] = None,
+    ):
+        self.email = email
+        self.password = password
+        self.profile_dir = profile_dir or DEFAULT_PROFILE_DIR
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
+        self.headless = headless
+        self.session_file = session_file
+        self._playwright = None
+        self._browser_ref = None  # Camoufox browser reference
+        self._context: Optional[BrowserContext] = None
+        self._page: Optional[Page] = None
+        self._csrf: Optional[str] = None
+        self._display_name: Optional[str] = None
+
+        # Select engine
+        if engine == "chrome":
+            self._engine = _ChromeEngine()
+        elif engine == "camoufox":
+            self._engine = _CamoufoxEngine()
+        else:  # auto
+            try:
+                from camoufox.sync_api import Camoufox  # noqa: F401
+
+                self._engine = _CamoufoxEngine()
+            except ImportError:
+                self._engine = _ChromeEngine()
+
+        engine_name = "Camoufox" if isinstance(self._engine, _CamoufoxEngine) else "Chrome"
+        log.info("Browser engine: %s", engine_name)
+
+    def login(self, timeout_ms: int = 600000) -> bool:
+        if isinstance(self._engine, _CamoufoxEngine):
+            result = self._engine.launch(self.profile_dir, self.headless, self.session_file)
+        else:
+            result = self._engine.launch(self.profile_dir, self.headless)
+        self._context, self._page, self._playwright, self._browser_ref = result
 
         log.debug("Navigating to connect.garmin.com/modern/")
         try:
@@ -103,6 +213,7 @@ class GarminClient:
 
         if not self._is_on_login_page():
             print("Already logged in (session restored)")
+            self._engine.save_session(self._page, self.session_file)
             return self._post_login_setup()
 
         print("Logging in...")
@@ -295,6 +406,7 @@ class GarminClient:
         print("Login successful!")
         print("Setting up session...")
         log.info("Login successful, URL: %s", self._page.url)
+        self._engine.save_session(self._page, self.session_file)
         return self._post_login_setup()
 
     def _submit_mfa_code(self, code: str):
@@ -692,13 +804,11 @@ class GarminClient:
         return path
 
     def close(self):
-        if self._context:
-            self._context.close()
-        if self._playwright:
-            self._playwright.stop()
+        self._engine.close(self._context, self._playwright, self._browser_ref)
         self._page = None
         self._context = None
         self._playwright = None
+        self._browser_ref = None
 
 
 def _merge_data(existing, new):
