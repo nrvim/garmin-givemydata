@@ -19,9 +19,11 @@ jobs:
       - name: Get release info from PyPI
         id: pypi
         run: |
-          sleep 90  # wait for PyPI to index the new version
           VERSION="${GITHUB_REF_NAME#v}"
-          python3 -c "
+          # Retry up to 5 times waiting for PyPI to index the new version
+          for i in 1 2 3 4 5; do
+            echo "Attempt $i: checking PyPI for version $VERSION..."
+            if python3 -c "
           import urllib.request, json
           data = json.loads(urllib.request.urlopen('https://pypi.org/pypi/garmin-givemydata/${VERSION}/json').read())
           for u in data['urls']:
@@ -29,8 +31,14 @@ jobs:
                   print('url=' + u['url'])
                   print('sha256=' + u['digests']['sha256'])
                   break
-          " >> $GITHUB_OUTPUT
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          " >> $GITHUB_OUTPUT 2>/dev/null; then
+              echo "version=$VERSION" >> $GITHUB_OUTPUT
+              echo "Found on PyPI!"
+              break
+            fi
+            echo "Not yet indexed, waiting 60s..."
+            sleep 60
+          done
 
       - name: Clone homebrew-tap
         run: |
@@ -44,7 +52,7 @@ jobs:
           class GarminGivemydata < Formula
             include Language::Python::Virtualenv
 
-            desc "Get your Garmin Connect data back — 47-table SQLite + MCP server"
+            desc "Get your Garmin Connect data back — 48-table SQLite + MCP server"
             homepage "https://github.com/nrvim/garmin-givemydata"
             url "${{ steps.pypi.outputs.url }}"
             sha256 "${{ steps.pypi.outputs.sha256 }}"
