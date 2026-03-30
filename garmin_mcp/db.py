@@ -400,6 +400,15 @@ CREATE TABLE IF NOT EXISTS workout_schedule (
     raw_json        TEXT
 );
 
+CREATE TABLE IF NOT EXISTS workouts (
+    workout_id      INTEGER PRIMARY KEY,
+    workout_name    TEXT,
+    sport_type      TEXT,
+    created_date    TEXT,
+    updated_date    TEXT,
+    raw_json        TEXT
+);
+
 -- =========================================================================
 -- Profile Tables (rarely change)
 -- =========================================================================
@@ -1399,9 +1408,30 @@ def upsert_health_snapshot(conn, record):
 
 
 def upsert_workout_schedule(conn, record):
-    d = record.get("calendarDate") or record.get("date")
+    d = record.get("calendarDate") or record.get("scheduleDate") or record.get("date")
     if d:
         _upsert_raw_only(conn, "workout_schedule", "calendar_date", record, d)
+
+
+def upsert_workout(conn: sqlite3.Connection, record: dict) -> None:
+    wid = record.get("workoutId")
+    if not wid:
+        return
+    sport = record.get("sportType", {})
+    sport_key = sport.get("sportTypeKey") if isinstance(sport, dict) else None
+    conn.execute(
+        """INSERT OR REPLACE INTO workouts
+           (workout_id, workout_name, sport_type, created_date, updated_date, raw_json)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            wid,
+            record.get("workoutName"),
+            sport_key,
+            record.get("createdDate"),
+            record.get("updateDate"),
+            json.dumps(record),
+        ),
+    )
 
 
 def upsert_personal_record(conn, record):
@@ -1712,6 +1742,11 @@ def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str
         elif name == "workout_schedule":
             for rec in records:
                 upsert_workout_schedule(conn, rec)
+                count += 1
+
+        elif name == "workouts":
+            for rec in records:
+                upsert_workout(conn, rec)
                 count += 1
 
         elif name in ("hrv", "hrv_daily"):
