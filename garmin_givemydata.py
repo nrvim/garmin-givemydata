@@ -383,9 +383,14 @@ examples:
         else:
             print("  Not saved. Set GARMIN_EMAIL and GARMIN_PASSWORD environment variables next time.")
 
-    status = get_db_status()
     today = date.today()
     profile = args.profile
+
+    # FIT-only mode skips DB status check entirely
+    if not args.fit_only:
+        status = get_db_status()
+    else:
+        status = {"exists": False, "rows": 0, "last_date": None, "first_date": None}
 
     if args.full:
         mode = "full"
@@ -403,7 +408,8 @@ examples:
         mode = "full"
         start = (today - timedelta(days=365 * 10)).isoformat()
         end = today.isoformat()
-        print("No existing data found. Running full historical fetch...")
+        if not args.fit_only:
+            print("No existing data found. Running full historical fetch...")
     else:
         mode = "incremental"
         last = date.fromisoformat(status["last_date"])
