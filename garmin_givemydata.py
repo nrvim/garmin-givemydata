@@ -56,6 +56,7 @@ def _get_data_dir() -> Path:
 
 DATA_DIR = _get_data_dir()
 PROFILE_DIR = DATA_DIR / "browser_profile"
+SESSION_FILE = DATA_DIR / "garmin_session.json"
 
 # ─── Fetch profiles ──────────────────────────────────────────
 FETCH_PROFILES = {
@@ -281,6 +282,11 @@ examples:
         action="store_true",
         help="Show the browser window (default: headless). Useful for debugging login issues.",
     )
+    parser.add_argument(
+        "--chrome",
+        action="store_true",
+        help="Use Chrome instead of Camoufox (default: auto-detect best engine).",
+    )
 
     args = parser.parse_args()
 
@@ -426,6 +432,8 @@ examples:
             password=password,
             profile_dir=PROFILE_DIR,
             headless=not args.visible,
+            engine="chrome" if args.chrome else "auto",
+            session_file=SESSION_FILE,
         )
         try:
             if not client.login():
@@ -537,6 +545,8 @@ examples:
         password=password,
         profile_dir=PROFILE_DIR,
         headless=not args.visible,
+        engine="chrome" if args.chrome else "auto",
+        session_file=SESSION_FILE,
     )
 
     try:

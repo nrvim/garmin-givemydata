@@ -67,10 +67,13 @@ def incremental_sync(target_date: str = None) -> dict:
         if n > 0:
             counts[endpoint_name] = counts.get(endpoint_name, 0) + n
 
+    SESSION_FILE = PROJECT_DIR / "garmin_session.json"
     client = GarminClient(
         email=email,
         password=password,
         profile_dir=PROFILE_DIR,
+        engine="auto",
+        session_file=SESSION_FILE,
     )
 
     logger.info("Starting incremental sync for %s (+ %s)", today, yesterday)
