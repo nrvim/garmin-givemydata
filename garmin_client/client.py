@@ -38,7 +38,7 @@ SSO_LOGIN_URL = (
 class _ChromeEngine:
     """Browser engine using Playwright + system Chrome."""
 
-    def launch(self, profile_dir: Path, headless: bool):
+    def launch(self, profile_dir: Path, headless: bool, session_file: Path = None):
         """Launch Chrome. Returns (context, page, playwright_instance, None)."""
         pw = sync_playwright().start()
 
@@ -95,7 +95,11 @@ class _CamoufoxEngine:
         from camoufox.sync_api import Camoufox
 
         browser = Camoufox(headless=headless).__enter__()
-        page = browser.new_page()
+        try:
+            page = browser.new_page()
+        except Exception:
+            browser.close()
+            raise
         context = page.context
 
         # Load saved session cookies if available
@@ -193,10 +197,7 @@ class GarminClient:
         log.info("Browser engine: %s", engine_name)
 
     def login(self, timeout_ms: int = 600000) -> bool:
-        if isinstance(self._engine, _CamoufoxEngine):
-            result = self._engine.launch(self.profile_dir, self.headless, self.session_file)
-        else:
-            result = self._engine.launch(self.profile_dir, self.headless)
+        result = self._engine.launch(self.profile_dir, self.headless, self.session_file)
         self._context, self._page, self._playwright, self._browser_ref = result
 
         log.debug("Navigating to connect.garmin.com/modern/")
