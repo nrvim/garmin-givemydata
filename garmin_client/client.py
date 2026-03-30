@@ -213,9 +213,20 @@ class GarminClient:
         log.debug("URL after initial navigation: %s", self._page.url)
 
         if not self._is_on_login_page():
-            print("Already logged in (session restored)")
-            self._engine.save_session(self._page, self.session_file)
-            return self._post_login_setup()
+            # Verify we actually have a valid session by trying to extract CSRF
+            setup_ok = self._post_login_setup()
+            if setup_ok:
+                print("Already logged in (session restored)")
+                self._engine.save_session(self._page, self.session_file)
+                return True
+            # CSRF failed — page looks like app but session is invalid
+            # Navigate back to SSO for fresh login
+            log.debug("On app page but no CSRF — session invalid, proceeding with login")
+            try:
+                self._page.goto(SSO_LOGIN_URL, wait_until="domcontentloaded")
+                time.sleep(3)
+            except Exception:
+                pass
 
         print("Logging in...")
 
@@ -485,7 +496,7 @@ class GarminClient:
         self._csrf = setup.get("csrf")
         self._display_name = setup.get("displayName")
         if not self._csrf:
-            print("Warning: could not extract CSRF token")
+            log.debug("Could not extract CSRF token")
             return False
         log.info("Display name: %s", self._display_name)
         return True
