@@ -19,7 +19,7 @@ jobs:
       - name: Get release info from PyPI
         id: pypi
         run: |
-          sleep 30  # wait for PyPI to index the new version
+          sleep 90  # wait for PyPI to index the new version
           VERSION="${GITHUB_REF_NAME#v}"
           python3 -c "
           import urllib.request, json
