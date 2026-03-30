@@ -24,6 +24,7 @@ def profile_endpoints() -> dict:
         "weight_first": "/gc-api/weight-service/weight/first",
         "daily_summaries_count": "/gc-api/usersummary-service/usersummary/dailySummariesCount",
         "earned_badges": "/gc-api/badge-service/badge/earned",
+        "workouts": "/gc-api/workout-service/workouts?start=0&limit=100",
     }
 
 

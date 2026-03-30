@@ -150,6 +150,17 @@ class GarminClient:
         pwd_input.click()
         self._page.keyboard.type(self.password, delay=30)
 
+        # Auto-check "Remember Me" on login page
+        try:
+            self._page.evaluate("""
+                () => {
+                    const cb = document.querySelector('input[name="remember"], input[id="remember"]');
+                    if (cb && !cb.checked) cb.click();
+                }
+            """)
+        except Exception:
+            pass
+
         submit = self._page.locator('button[type="submit"], button:has-text("Sign In")').first
         submit.click()
         print("Credentials submitted, waiting for Garmin...")
@@ -214,6 +225,17 @@ class GarminClient:
             if not mfa_prompted and is_mfa_page:
                 mfa_prompted = True
                 log.info("MFA page detected: %s", url)
+
+                # Auto-check "Remember this browser" if available
+                try:
+                    self._page.evaluate("""
+                        () => {
+                            const cb = document.querySelector('input[name="remember"], input[id="remember"], input[type="checkbox"]');
+                            if (cb && !cb.checked) cb.click();
+                        }
+                    """)
+                except Exception:
+                    pass
 
                 if sys.stdin.isatty():
                     import threading
