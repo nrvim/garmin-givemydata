@@ -33,6 +33,9 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[project.optional-dependencies]
+camoufox = ["camoufox>=0.4"]
+
 [project.urls]
 Homepage = "https://github.com/nrvim/garmin-givemydata"
 Repository = "https://github.com/nrvim/garmin-givemydata"
