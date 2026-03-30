@@ -1,0 +1,3 @@
+playwright>=1.40
+httpx>=0.25
+mcp[cli]>=1.0

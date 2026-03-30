@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.pyc
+*.db
+browser_profile*/
+garmin_data_for_ai.json
+.env
+debug.log
+test_results.log
+full_run.log
+export_test/
+fit/
+test_everything.py
+*.db-shm
+*.db-wal

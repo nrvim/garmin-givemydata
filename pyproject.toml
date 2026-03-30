@@ -1,0 +1,11 @@
+[project]
+name = "garmin-givemydata"
+version = "0.1.0"
+description = "Get your Garmin Connect data back. Browser-based client + SQLite database + MCP server for Claude Code."
+requires-python = ">=3.10"
+license = "AGPL-3.0"
+dependencies = [
+    "playwright>=1.40",
+    "httpx>=0.25",
+    "mcp[cli]>=1.0",
+]

@@ -1,0 +1,711 @@
+"""
+Garmin Connect Client using Playwright for authentication and data fetching.
+"""
+
+import json
+import logging
+import sys
+import time
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Optional
+
+from playwright.sync_api import sync_playwright, BrowserContext, Page
+
+from .endpoints import (
+    activity_detail_endpoints,
+    profile_endpoints,
+    profile_graphql,
+    full_range_graphql,
+    full_range_rest,
+    monthly_graphql,
+    monthly_rest,
+    daily_rest,
+    daily_graphql,
+)
+
+log = logging.getLogger(__name__)
+
+DEFAULT_PROFILE_DIR = Path.home() / ".garmin-client" / "browser_profile"
+
+SSO_LOGIN_URL = (
+    "https://sso.garmin.com/portal/sso/en-US/sign-in"
+    "?clientId=GarminConnect"
+    "&service=https%3A%2F%2Fconnect.garmin.com%2Fapp"
+)
+
+
+class GarminClient:
+    def __init__(
+        self,
+        email: str,
+        password: str,
+        profile_dir: Optional[Path] = None,
+        headless: bool = False,
+    ):
+        self.email = email
+        self.password = password
+        self.profile_dir = profile_dir or DEFAULT_PROFILE_DIR
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
+        self.headless = headless
+        self._playwright = None
+        self._context: Optional[BrowserContext] = None
+        self._page: Optional[Page] = None
+        self._csrf: Optional[str] = None
+        self._display_name: Optional[str] = None
+
+    def login(self, timeout_ms: int = 600000) -> bool:
+        self._playwright = sync_playwright().start()
+
+        # Cloudflare Turnstile blocks headless browsers without valid cookies.
+        # First login must be visible to pass Cloudflare verification.
+        # After that, saved cookies let headless mode work fine.
+        # Check for Garmin cookies (not just the profile directory, which
+        # Chrome creates even on failed logins).
+        cookies_file = self.profile_dir / "Default" / "Cookies"
+        has_valid_session = cookies_file.exists() and cookies_file.stat().st_size > 1024
+        use_headless = self.headless and has_valid_session
+
+        if self.headless and not has_valid_session:
+            print("First login requires a visible browser (Cloudflare verification).")
+            print("Subsequent runs will be headless automatically.\n")
+
+        args = [
+            "--disable-blink-features=AutomationControlled",
+        ]
+        if use_headless:
+            args.append("--headless=new")
+
+        self._context = self._playwright.chromium.launch_persistent_context(
+            user_data_dir=str(self.profile_dir),
+            headless=False,
+            channel="chrome",
+            args=args,
+            ignore_default_args=["--enable-automation"],
+            locale="en-US",
+            timezone_id="America/New_York",
+        )
+
+        self._page = (
+            self._context.pages[0] if self._context.pages else self._context.new_page()
+        )
+        self._page.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+        )
+
+        log.debug("Navigating to connect.garmin.com/modern/")
+        try:
+            self._page.goto(
+                "https://connect.garmin.com/modern/",
+                wait_until="domcontentloaded",
+            )
+        except Exception as e:
+            log.debug("Initial navigation error (expected for fresh profile): %s", e)
+        time.sleep(3)
+
+        log.debug("URL after initial navigation: %s", self._page.url)
+
+        if not self._is_on_login_page():
+            print("Already logged in (session restored)")
+            return self._post_login_setup()
+
+        print("Logging in...")
+
+        # Clear stale SSO/Garmin cookies to prevent login loops
+        try:
+            self._context.clear_cookies()
+            log.debug("Cleared stale cookies")
+        except Exception as e:
+            log.debug("Cookie clear error: %s", e)
+
+        # Navigate to SSO — may need retries on fresh profiles
+        for attempt in range(3):
+            try:
+                self._page.goto(SSO_LOGIN_URL, wait_until="domcontentloaded")
+                break
+            except Exception as e:
+                log.debug("SSO navigation attempt %d error: %s", attempt + 1, e)
+                time.sleep(3)
+
+        time.sleep(2)
+        log.debug("SSO page URL: %s", self._page.url)
+
+        # Wait for login form to be ready
+        try:
+            email_input = self._page.locator('input[name="email"]').first
+            email_input.wait_for(timeout=15000)
+        except Exception:
+            log.error("Login form not found on page: %s", self._page.url)
+            # Dump page content for debugging
+            try:
+                body = self._page.evaluate("() => document.body?.innerText?.substring(0, 500)")
+                print(f"Login form not found. Current URL: {self._page.url}")
+                print(f"Page content: {body}")
+            except Exception:
+                print(f"Login form not found. Current URL: {self._page.url}")
+            print("Try running with --visible or deleting browser_profile_stealth/")
+            return False
+
+        email_input.click()
+        self._page.keyboard.type(self.email, delay=30)
+
+        pwd_input = self._page.locator('input[name="password"]').first
+        pwd_input.wait_for(timeout=5000)
+        pwd_input.click()
+        self._page.keyboard.type(self.password, delay=30)
+
+        submit = self._page.locator(
+            'button[type="submit"], button:has-text("Sign In")'
+        ).first
+        submit.click()
+        print("Credentials submitted, waiting for Garmin...")
+
+        # Poll until we leave SSO — handles both MFA and direct login
+        # The user can enter MFA in the browser OR via console (if interactive)
+        max_polls = timeout_ms // 1000
+        mfa_prompted = False
+        mfa_code_thread = None
+        mfa_code_result = [None]  # mutable container for thread result
+
+        for poll in range(max_polls):
+            time.sleep(1)
+            url = self._page.url
+
+            # Log URL periodically
+            if poll % 5 == 0:
+                log.debug("Poll %d: URL = %s", poll, url)
+
+            # Success: we left SSO entirely
+            if "connect.garmin.com" in url and "sso.garmin.com" not in url:
+                log.info("Login redirect detected: %s", url)
+                break
+
+            # Check if a NEW page/tab opened with the app (Garmin sometimes
+            # opens the app in a new tab after MFA)
+            for p in self._context.pages:
+                p_url = p.url
+                if "connect.garmin.com" in p_url and "sso.garmin.com" not in p_url:
+                    log.info("Found app in another tab: %s", p_url)
+                    self._page = p
+                    url = p_url
+                    break
+            if "connect.garmin.com" in url and "sso.garmin.com" not in url:
+                break
+
+            # After MFA prompted: only do lightweight URL checks, don't
+            # navigate or run JS that could disrupt the MFA page.
+            # The user will complete MFA in the browser — Garmin will
+            # redirect to connect.garmin.com automatically.
+
+            # MFA page detected — check URL AND check for MFA input fields on the page
+            is_mfa_page = "/mfa" in url.lower() or "verifymfa" in url.lower()
+            if not is_mfa_page and not mfa_prompted and "sso.garmin.com" in url:
+                try:
+                    has_mfa_input = self._page.evaluate("""
+                        () => {
+                            const inputs = document.querySelectorAll(
+                                'input[name="verificationCode"], input[name="securityCode"], input[type="tel"], '
+                                + 'input[placeholder*="code"], input[placeholder*="Code"], '
+                                + 'input[name="mfaCode"], input[autocomplete="one-time-code"]'
+                            );
+                            return inputs.length > 0;
+                        }
+                    """)
+                    if has_mfa_input:
+                        is_mfa_page = True
+                        log.info("MFA input found on page (same URL)")
+                except Exception:
+                    pass
+
+            if not mfa_prompted and is_mfa_page:
+                mfa_prompted = True
+                log.info("MFA page detected: %s", url)
+
+                if sys.stdin.isatty():
+                    import threading
+
+                    def _read_mfa():
+                        try:
+                            mfa_code_result[0] = input("  Enter MFA code: ").strip()
+                        except (EOFError, OSError):
+                            pass
+
+                    print()
+                    print("  MFA required!")
+                    print("  Enter code here OR in the browser window:")
+                    mfa_code_thread = threading.Thread(target=_read_mfa, daemon=True)
+                    mfa_code_thread.start()
+                else:
+                    print()
+                    print("  MFA required — enter code in the browser window...")
+
+            # Show waiting status for MFA
+            if mfa_prompted and poll % 15 == 0 and poll > 0:
+                print("  Still waiting for MFA code...")
+
+            # If we've been stuck on SSO for 30+ seconds after MFA was prompted,
+            # try navigating to the app directly — the session might be valid
+            if mfa_prompted and poll > 0 and poll % 30 == 0:
+                log.debug("Stuck on SSO after MFA — trying to navigate to app...")
+                try:
+                    self._page.goto(
+                        "https://connect.garmin.com/modern/",
+                        wait_until="domcontentloaded",
+                        timeout=10000,
+                    )
+                    time.sleep(2)
+                    url = self._page.url
+                    if "connect.garmin.com" in url and "sso.garmin.com" not in url:
+                        log.info("Navigated to app after MFA: %s", url)
+                        break
+                except Exception as e:
+                    log.debug("Nav attempt error: %s", e)
+
+            # If console MFA code was entered, type it into the browser
+            if mfa_code_result[0] is not None:
+                code = mfa_code_result[0]
+                mfa_code_result[0] = None  # consume it
+                log.info("MFA code from console (%d chars), submitting...", len(code))
+                self._submit_mfa_code(code)
+
+        # Wait for app to load
+        time.sleep(3)
+        log.debug("Final URL: %s", self._page.url)
+
+        if self._is_on_login_page():
+            print(f"Login failed — still on login page: {self._page.url}")
+            return False
+
+        print("Login successful!")
+        print("Setting up session...")
+        log.info("Login successful, URL: %s", self._page.url)
+        return self._post_login_setup()
+
+    def _submit_mfa_code(self, code: str):
+        """Type an MFA code into the browser and submit."""
+        mfa_selectors = [
+            'input[name="securityCode"]',
+            'input[name="verificationCode"]',
+            'input[type="tel"]',
+            'input[placeholder*="code"]',
+            'input[placeholder*="Code"]',
+            'input[name="mfaCode"]',
+            'input[autocomplete="one-time-code"]',
+        ]
+
+        time.sleep(1)
+        for sel in mfa_selectors:
+            try:
+                mfa_input = self._page.locator(sel).first
+                mfa_input.wait_for(timeout=3000)
+                mfa_input.click()
+                mfa_input.fill(code)
+                log.info("MFA code filled via selector: %s", sel)
+
+                submit_btn = self._page.locator(
+                    'button[type="submit"], button:has-text("Verify"), '
+                    'button:has-text("Submit"), button:has-text("Continue"), '
+                    'button:has-text("Next")'
+                ).first
+                try:
+                    submit_btn.click()
+                except Exception:
+                    self._page.keyboard.press("Enter")
+
+                log.info("MFA code submitted via browser")
+                return
+            except Exception:
+                continue
+
+        log.warning("Could not find MFA input field to fill")
+
+    def _is_on_login_page(self) -> bool:
+        url = self._page.url.lower()
+        if "connect.garmin.com" in url and "sso.garmin.com" not in url:
+            return False
+        return "sso.garmin.com" in url or "signin" in url or "sign-in" in url
+
+    def _post_login_setup(self) -> bool:
+        # Make sure we're on the /modern/ page which has the CSRF meta tag
+        current = self._page.url
+        if "/modern/" not in current:
+            log.debug("Navigating to /modern/ for CSRF (was on %s)", current)
+            try:
+                self._page.goto(
+                    "https://connect.garmin.com/modern/",
+                    wait_until="domcontentloaded",
+                )
+            except Exception:
+                pass
+            time.sleep(3)
+
+        setup = self._page.evaluate("""
+            async () => {
+                const csrf = document.querySelector(
+                    'meta[name="csrf-token"], meta[name="_csrf"]'
+                )?.content;
+                const h = {'connect-csrf-token': csrf};
+                const resp = await fetch(
+                    '/gc-api/userprofile-service/socialProfile',
+                    {credentials: 'include', headers: h}
+                );
+                const profile = resp.status === 200 ? await resp.json() : null;
+                return {csrf, displayName: profile?.displayName};
+            }
+        """)
+        self._csrf = setup.get("csrf")
+        self._display_name = setup.get("displayName")
+        if not self._csrf:
+            print("Warning: could not extract CSRF token")
+            return False
+        print(f"Display name: {self._display_name}")
+        return True
+
+    def _fetch_batch(self, rest: dict, gql: dict) -> dict:
+        """Fetch a batch of REST + GraphQL endpoints in parallel via browser."""
+        # Ensure we're on the right page (navigation can destroy context)
+        current = self._page.url
+        if "connect.garmin.com" not in current or "sso.garmin.com" in current:
+            try:
+                self._page.goto(
+                    "https://connect.garmin.com/modern/",
+                    wait_until="domcontentloaded",
+                )
+                time.sleep(2)
+            except Exception:
+                pass
+
+        rest_entries = list(rest.items())
+        gql_entries = list(gql.items())
+
+        return self._page.evaluate(
+            """
+            async ([csrf, restEntries, gqlEntries]) => {
+                const h = {'connect-csrf-token': csrf, 'Accept': 'application/json'};
+
+                async function get(url) {
+                    try {
+                        const resp = await fetch(url, {credentials:'include', headers: h});
+                        if (resp.status === 200) {
+                            const text = await resp.text();
+                            try { return {status: 200, data: JSON.parse(text)}; }
+                            catch { return {status: 200, data: text}; }
+                        }
+                        return {status: resp.status, data: null};
+                    } catch(e) { return {status: 'error', data: e.message}; }
+                }
+
+                async function gql(query) {
+                    try {
+                        const resp = await fetch('/gc-api/graphql-gateway/graphql', {
+                            method: 'POST',
+                            credentials: 'include',
+                            headers: {...h, 'Content-Type': 'application/json'},
+                            body: JSON.stringify({query})
+                        });
+                        if (resp.status === 200) return {status: 200, data: await resp.json()};
+                        return {status: resp.status, data: null};
+                    } catch(e) { return {status: 'error', data: e.message}; }
+                }
+
+                const promises = [
+                    ...restEntries.map(([name, url]) => get(url).then(r => [name, r])),
+                    ...gqlEntries.map(([name, query]) => gql(query).then(r => ['gql_' + name, r])),
+                ];
+
+                const results = await Promise.all(promises);
+                const output = {};
+                for (const [name, result] of results) {
+                    output[name] = result;
+                }
+                return output;
+            }
+        """,
+            [self._csrf, rest_entries, gql_entries],
+        )
+
+    def _date_chunks(self, start: str, end: str, max_days: int = 28) -> list:
+        """Split a date range into chunks of max_days."""
+        chunks = []
+        s = date.fromisoformat(start)
+        e = date.fromisoformat(end)
+        while s < e:
+            chunk_end = min(s + timedelta(days=max_days), e)
+            chunks.append((s.isoformat(), chunk_end.isoformat()))
+            s = chunk_end + timedelta(days=1)
+        return chunks
+
+    def fetch_all(
+        self,
+        target_date: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        on_batch=None,
+        known_activity_ids: Optional[set] = None,
+    ) -> dict:
+        """Fetch all data from Garmin Connect.
+
+        Parameters
+        ----------
+        on_batch : callable, optional
+            ``on_batch(endpoint_name, data, cal_date=None)`` called after each
+            successful fetch.  When provided, data is saved immediately (direct-
+            to-DB).  When *None*, results accumulate in memory (legacy mode).
+        known_activity_ids : set, optional
+            Activity IDs that already have detail data (splits, HR zones, weather).
+            These will be skipped during per-activity detail fetching.
+        """
+        today = target_date or date.today().isoformat()
+        e_date = end_date or today
+        s_date = (
+            start_date or (date.fromisoformat(today) - timedelta(days=30)).isoformat()
+        )
+
+        all_results = {}
+
+        def _process_batch(batch_result, cal_date=None):
+            """Send each endpoint result to on_batch or accumulate in memory."""
+            for name, result in batch_result.items():
+                if result.get("status") != 200 or not result.get("data"):
+                    continue
+                if on_batch:
+                    on_batch(name, result["data"], cal_date=cal_date)
+                else:
+                    if name not in all_results:
+                        all_results[name] = result
+                    else:
+                        existing = all_results[name].get("data")
+                        new = result["data"]
+                        all_results[name]["data"] = _merge_data(existing, new)
+
+        # 1. Profile endpoints (no date) + profile GraphQL
+        print("  Fetching profile data...")
+        profile = self._fetch_batch(
+            profile_endpoints(),
+            profile_graphql(self._display_name),
+        )
+        _process_batch(profile)
+
+        # 2. Full-range queries (supports 365+ days)
+        print(
+            "  Fetching full-range data (activities, HRV, training, VO2max, weight)..."
+        )
+        full_rest = full_range_rest(self._display_name, s_date, e_date)
+        full_gql = full_range_graphql(self._display_name, s_date, e_date)
+        full = self._fetch_batch(full_rest, full_gql)
+        _process_batch(full)
+
+        # 3. Monthly-chunked queries (max 28-day ranges) — REST + GraphQL
+        print("  Fetching monthly-chunked data (sleep stats, HRV, calories, etc.)...")
+        chunks = self._date_chunks(s_date, e_date, max_days=28)
+        for i, (cs, ce) in enumerate(chunks):
+            print(f"    Chunk {i + 1}/{len(chunks)}: {cs} to {ce}")
+            m_rest = monthly_rest(self._display_name, cs, ce)
+            m_gql = monthly_graphql(self._display_name, cs, ce)
+            chunk_result = self._fetch_batch(m_rest, m_gql)
+            _process_batch(chunk_result)
+
+        # 4. Daily-chunked REST + GraphQL (stress, HR, sleep, SpO2, body battery)
+        print("  Fetching daily data (stress, HR, sleep, SpO2, body battery)...")
+        all_days = []
+        d = date.fromisoformat(s_date)
+        end = date.fromisoformat(e_date)
+        while d <= end:
+            all_days.append(d.isoformat())
+            d += timedelta(days=1)
+
+        batch_size = 7
+        for i in range(0, len(all_days), batch_size):
+            batch_days = all_days[i : i + batch_size]
+            print(
+                f"    Days {i + 1}-{i + len(batch_days)}/{len(all_days)}: {batch_days[0]} to {batch_days[-1]}"
+            )
+
+            rest_batch = {}
+            gql_batch = {}
+            for day in batch_days:
+                for name, url in daily_rest(self._display_name, day).items():
+                    rest_batch[f"{name}_{day}"] = url
+                for name, query in daily_graphql(self._display_name, day).items():
+                    gql_batch[f"{name}_{day}"] = query
+
+            batch_result = self._fetch_batch(rest_batch, gql_batch)
+
+            # Daily results: split "endpoint_YYYY-MM-DD" into endpoint + date
+            for full_name, result in batch_result.items():
+                if result.get("status") != 200 or not result.get("data"):
+                    continue
+                # Extract base name and date from "stress_2026-03-29" or "gql_heart_rate_detail_2026-03-29"
+                # Date is always the last 10 chars after the last underscore
+                parts = full_name.rsplit("_", 1)
+                if len(parts) == 2 and len(parts[1]) == 10 and parts[1][4] == "-":
+                    base_name = parts[0]
+                    day_date = parts[1]
+                else:
+                    base_name = full_name
+                    day_date = None
+
+                flat = _flatten_single(result["data"])
+
+                if on_batch:
+                    on_batch(base_name, flat, cal_date=day_date)
+                else:
+                    if isinstance(flat, dict):
+                        entry = {"date": day_date, **flat}
+                    else:
+                        entry = {"date": day_date, "value": flat}
+                    if base_name not in all_results:
+                        all_results[base_name] = {"status": 200, "data": []}
+                    existing = all_results[base_name]["data"]
+                    if isinstance(existing, list):
+                        existing.append(entry)
+                    else:
+                        all_results[base_name] = {"status": 200, "data": [entry]}
+
+        # 5. Per-activity detail data (splits, HR zones, weather, exercise sets)
+        print("  Fetching per-activity details (splits, HR zones, weather)...")
+
+        # Collect activity IDs — from all_results (legacy mode) or by querying
+        # the activities endpoint directly
+        activity_ids = []
+
+        # Check all_results first (legacy/no-callback mode)
+        for name_key, result in all_results.items():
+            if name_key in ("activities", "activities_range"):
+                data = result.get("data", [])
+                if isinstance(data, list):
+                    for a in data:
+                        aid = a.get("activityId")
+                        if aid:
+                            activity_ids.append(aid)
+
+        # If on_batch mode (direct-to-DB), fetch activity list from the API
+        if not activity_ids:
+            try:
+                act_result = self._fetch_batch(
+                    {"_activity_ids": "/gc-api/activitylist-service/activities/search/activities?limit=1000&start=0"},
+                    {},
+                )
+                act_data = act_result.get("_activity_ids", {})
+                if act_data.get("status") == 200 and isinstance(act_data.get("data"), list):
+                    for a in act_data["data"]:
+                        aid = a.get("activityId")
+                        if aid:
+                            activity_ids.append(aid)
+            except Exception as e:
+                log.debug("Could not fetch activity IDs for detail fetch: %s", e)
+
+        # Skip activities that already have detail data
+        if known_activity_ids:
+            new_ids = [aid for aid in activity_ids if aid not in known_activity_ids]
+            skipped = len(activity_ids) - len(new_ids)
+            if skipped > 0:
+                print(f"    Skipping {skipped} activities (already have details)")
+            activity_ids = new_ids
+
+        if activity_ids:
+            print(f"    Fetching details for {len(activity_ids)} activities...")
+        else:
+            print("    All activity details up to date")
+
+        for i, aid in enumerate(activity_ids):
+            if i % 10 == 0 and i > 0:
+                print(f"    Activity {i}/{len(activity_ids)}")
+            detail_eps = activity_detail_endpoints(aid)
+            detail_result = self._fetch_batch(detail_eps, {})
+            for ep_name, result in detail_result.items():
+                if result.get("status") != 200 or not result.get("data"):
+                    continue
+                if on_batch:
+                    on_batch(ep_name, result["data"], cal_date=str(aid))
+                else:
+                    all_results[f"{ep_name}_{aid}"] = result
+
+        return all_results
+
+    def export_for_ai(
+        self,
+        output_path: str = "garmin_data_for_ai.json",
+        target_date: Optional[str] = None,
+        days: int = 30,
+    ) -> Path:
+        today = target_date or date.today().isoformat()
+        start = (date.fromisoformat(today) - timedelta(days=days)).isoformat()
+
+        raw = self.fetch_all(target_date=today, start_date=start, end_date=today)
+
+        export = {
+            "_metadata": {
+                "exported_at": datetime.now().isoformat(),
+                "target_date": today,
+                "date_range": {"start": start, "end": today},
+                "display_name": self._display_name,
+                "endpoints_ok": sum(1 for v in raw.values() if v.get("status") == 200),
+                "endpoints_total": len(raw),
+            },
+            "data": {},
+        }
+
+        for name, result in raw.items():
+            if result.get("status") == 200 and result.get("data"):
+                data = result["data"]
+                if isinstance(data, dict) and "data" in data and len(data) == 1:
+                    data = data["data"]
+                    if isinstance(data, dict) and len(data) == 1:
+                        data = list(data.values())[0]
+                export["data"][name] = _remove_nulls(data)
+
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(export, f, indent=2)
+
+        size_mb = path.stat().st_size / 1024 / 1024
+        print(f"Exported {len(export['data'])} datasets to {path} ({size_mb:.1f} MB)")
+        return path
+
+    def close(self):
+        if self._context:
+            self._context.close()
+        if self._playwright:
+            self._playwright.stop()
+        self._page = None
+        self._context = None
+        self._playwright = None
+
+
+def _merge_data(existing, new):
+    """Merge two GraphQL responses (append lists, merge dicts)."""
+    if isinstance(existing, dict) and isinstance(new, dict):
+        merged = {}
+        all_keys = set(list(existing.keys()) + list(new.keys()))
+        for k in all_keys:
+            if k in existing and k in new:
+                merged[k] = _merge_data(existing[k], new[k])
+            elif k in existing:
+                merged[k] = existing[k]
+            else:
+                merged[k] = new[k]
+        return merged
+    if isinstance(existing, list) and isinstance(new, list):
+        return existing + new
+    # For scalars, keep the newer value
+    return new
+
+
+def _flatten_single(data):
+    """If data is a dict with a single 'data' key wrapping another dict, flatten it."""
+    if isinstance(data, dict) and "data" in data and len(data) == 1:
+        inner = data["data"]
+        if isinstance(inner, dict) and len(inner) == 1:
+            return list(inner.values())[0]
+        return inner
+    return data
+
+
+def _remove_nulls(obj):
+    if isinstance(obj, dict):
+        return {k: _remove_nulls(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_remove_nulls(item) for item in obj]
+    return obj
