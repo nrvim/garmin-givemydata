@@ -259,6 +259,20 @@ examples:
     export_group.add_argument("--export-gpx", type=str, metavar="DIR", help="Export activities as GPX files")
     export_group.add_argument("--export-tcx", type=str, metavar="DIR", help="Export activities as TCX files")
 
+    # FIT-only download
+    fit_group = parser.add_argument_group("FIT file download (skip health data sync)")
+    fit_group.add_argument(
+        "--fit-only",
+        action="store_true",
+        help="Download FIT files only, skip health data sync",
+    )
+    fit_group.add_argument(
+        "--latest", action="store_true", help="Download only the latest FIT file (use with --fit-only)"
+    )
+    fit_group.add_argument(
+        "--date", type=str, help="Download FIT file for a specific date YYYY-MM-DD (use with --fit-only)"
+    )
+
     # Utility
     parser.add_argument("--json-import", type=str, help="Import existing JSON file to DB")
     parser.add_argument("--status", action="store_true", help="Show database status and exit")
@@ -398,6 +412,109 @@ examples:
         gap_days = (today - last).days
         print(f"Database has data through {status['last_date']} ({status['rows']} daily records)")
         print(f"Fetching {gap_days + 1} days: {start} to {end}")
+
+    # ── FIT-only mode ─────────────────────────────────────
+    if args.fit_only:
+        client = GarminClient(
+            email=email,
+            password=password,
+            profile_dir=PROFILE_DIR,
+            headless=not args.visible,
+        )
+        try:
+            if not client.login():
+                print("Login failed!")
+                sys.exit(1)
+
+            # Get activity list from API
+            print("Fetching activity list...")
+            client._page.goto("https://connect.garmin.com/modern/", wait_until="domcontentloaded")
+            time.sleep(2)
+
+            act_result = client._page.evaluate("""
+                async () => {
+                    const csrf = document.querySelector('meta[name="csrf-token"], meta[name="_csrf"]')?.content;
+                    const resp = await fetch('/gc-api/activitylist-service/activities/search/activities?limit=1000&start=0', {
+                        credentials: 'include',
+                        headers: {'connect-csrf-token': csrf || '', 'Accept': 'application/json'}
+                    });
+                    if (resp.status !== 200) return [];
+                    return await resp.json();
+                }
+            """)
+
+            if not act_result:
+                print("No activities found.")
+                sys.exit(1)
+
+            # Filter by date or latest
+            if args.latest:
+                activities = act_result[:1]
+            elif args.date:
+                activities = [a for a in act_result if a.get("startTimeLocal", "").startswith(args.date)]
+                if not activities:
+                    print(f"No activity found for date {args.date}")
+                    sys.exit(1)
+            elif args.days:
+                cutoff = (today - timedelta(days=args.days)).isoformat()
+                activities = [a for a in act_result if (a.get("startTimeLocal") or "") >= cutoff]
+            else:
+                activities = act_result
+
+            fit_dir = DATA_DIR / "fit"
+            fit_dir.mkdir(exist_ok=True)
+
+            print(f"Downloading {len(activities)} FIT file(s)...")
+            downloaded = 0
+            for a in activities:
+                aid = a.get("activityId")
+                name = a.get("activityName", "")
+                date_str = a.get("startTimeLocal", "")
+                safe_name = ""
+                if name:
+                    safe_name = "_" + "".join(c if c.isalnum() or c in "-_ " else "" for c in name).strip().replace(
+                        " ", "_"
+                    )
+                safe_date = date_str[:10] if date_str else str(aid)
+                filename = f"{safe_date}_{aid}{safe_name}.zip"
+                filepath = fit_dir / filename
+
+                if filepath.exists():
+                    print(f"  {filename} (already exists)")
+                    continue
+
+                url = f"/gc-api/download-service/files/activity/{aid}"
+                result = client._page.evaluate(
+                    f"""
+                    async () => {{
+                        try {{
+                            const csrf = document.querySelector(
+                                'meta[name="csrf-token"], meta[name="_csrf"]'
+                            )?.content;
+                            const resp = await fetch('{url}', {{
+                                credentials: 'include',
+                                headers: {{'connect-csrf-token': csrf || ''}}
+                            }});
+                            if (resp.status !== 200) return {{status: resp.status}};
+                            const buffer = await resp.arrayBuffer();
+                            return {{status: 200, data: Array.from(new Uint8Array(buffer))}};
+                        }} catch(e) {{
+                            return {{status: 'error'}};
+                        }}
+                    }}
+                """
+                )
+
+                if result.get("status") == 200 and result.get("data"):
+                    with open(filepath, "wb") as f:
+                        f.write(bytes(result["data"]))
+                    downloaded += 1
+                    print(f"  {filename}")
+
+            print(f"\n{downloaded} FIT file(s) downloaded to {fit_dir}/")
+        finally:
+            client.close()
+        return
 
     profile_desc = FETCH_PROFILES[profile]["description"]
     print(f"\nMode: {mode}")
