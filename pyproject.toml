@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "garmin-givemydata"
-version = "0.1.4"
+version = "0.1.5"
 description = "Get your Garmin Connect data back. Browser-based extraction + 47-table SQLite database + MCP server for AI analysis."
 readme = "README.md"
 requires-python = ">=3.10"

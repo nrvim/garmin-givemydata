@@ -431,6 +431,22 @@ python garmin_givemydata.py --no-files
 python garmin_givemydata.py --status
 ```
 
+### FIT file download only (skip health data sync)
+
+```bash
+# Download the latest FIT file
+garmin-givemydata --fit-only --latest
+
+# Download FIT file for a specific date
+garmin-givemydata --fit-only --date 2026-03-30
+
+# Download FIT files for the last 7 days
+garmin-givemydata --fit-only --days 7
+
+# Download all FIT files
+garmin-givemydata --fit-only
+```
+
 ### Export (from local database — no Garmin login needed)
 
 ```bash
