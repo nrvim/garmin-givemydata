@@ -11,5 +11,7 @@ full_run.log
 export_test/
 fit/
 test_everything.py
+dist/
+*.egg-info/
 *.db-shm
 *.db-wal

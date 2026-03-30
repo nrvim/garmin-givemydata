@@ -168,7 +168,27 @@ Every metric Garmin tracks, extracted and stored locally in 47 dedicated SQLite 
 
 You need **Python 3.10+** and **Google Chrome** installed. That's it.
 
-### 1. Clone and setup
+### Option A: pip install (recommended)
+
+```bash
+pip install garmin-givemydata
+playwright install chromium
+```
+
+Then create a `.env` file with your credentials:
+```bash
+echo "GARMIN_EMAIL=your@email.com" > .env
+echo "GARMIN_PASSWORD=your_password" >> .env
+```
+
+Run:
+```bash
+garmin-givemydata           # fetch all data
+garmin-givemydata --status  # check database
+garmin-mcp                  # start MCP server
+```
+
+### Option B: Clone and setup
 
 ```bash
 git clone https://github.com/nrvim/garmin-givemydata.git

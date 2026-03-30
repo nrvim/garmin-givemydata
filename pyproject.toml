@@ -1,11 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "garmin-givemydata"
 version = "0.1.0"
-description = "Get your Garmin Connect data back. Browser-based client + SQLite database + MCP server for Claude Code."
+description = "Get your Garmin Connect data back. Browser-based extraction + 47-table SQLite database + MCP server for AI analysis."
+readme = "README.md"
 requires-python = ">=3.10"
-license = "AGPL-3.0"
+license = "AGPL-3.0-only"
+authors = [
+    { name = "garmin-givemydata contributors" },
+]
+keywords = ["garmin", "health", "fitness", "mcp", "data-portability", "sqlite", "wearable"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Topic :: Database",
+]
 dependencies = [
     "playwright>=1.40",
     "httpx>=0.25",
     "mcp[cli]>=1.0",
+    "python-dotenv>=1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/nrvim/garmin-givemydata"
+Repository = "https://github.com/nrvim/garmin-givemydata"
+Issues = "https://github.com/nrvim/garmin-givemydata/issues"
+
+[project.scripts]
+garmin-givemydata = "garmin_givemydata:main"
+garmin-mcp = "garmin_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["garmin_client", "garmin_mcp"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"garmin_givemydata.py" = "garmin_givemydata.py"
