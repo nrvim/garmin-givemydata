@@ -1,10 +1,11 @@
 # garmin-givemydata
 
+[![CI](https://github.com/nrvim/garmin-givemydata/actions/workflows/ci.yml/badge.svg)](https://github.com/nrvim/garmin-givemydata/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/garmin-givemydata.svg)](https://pypi.org/project/garmin-givemydata/)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io/)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)]()
-[![SQLite](https://img.shields.io/badge/Storage-SQLite%2047%20tables-orange.svg)]()
 [![GitHub stars](https://img.shields.io/github/stars/nrvim/garmin-givemydata?style=social)](https://github.com/nrvim/garmin-givemydata)
 
 **It's YOUR data. Take it back.**

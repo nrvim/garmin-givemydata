@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+
+  build:
+    name: Build & verify package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install hatch
+      - run: hatch build
+      - run: |
+          pip install dist/*.whl
+          garmin-givemydata --help
+
+  test-import:
+    name: Test import (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e .
+      - run: |
+          python -c "from garmin_client import GarminClient; print('garmin_client OK')"
+          python -c "from garmin_mcp.db import init_db, get_connection; print('garmin_mcp.db OK')"
+          python -c "from garmin_mcp.server import mcp; print('garmin_mcp.server OK')"
+      - name: Verify DB schema creates all tables
+        run: |
+          python -c "
+          import sqlite3
+          from garmin_mcp.db import init_db
+          conn = sqlite3.connect(':memory:')
+          init_db(conn)
+          cursor = conn.execute(\"SELECT COUNT(*) FROM sqlite_master WHERE type='table'\")
+          count = cursor.fetchone()[0]
+          print(f'Tables created: {count}')
+          assert count >= 47, f'Expected 47+ tables, got {count}'
+          print('Schema OK')
+          "

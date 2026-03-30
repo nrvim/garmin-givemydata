@@ -42,6 +42,18 @@ Issues = "https://github.com/nrvim/garmin-givemydata/issues"
 garmin-givemydata = "garmin_givemydata:main"
 garmin-mcp = "garmin_mcp.server:main"
 
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "F841",   # local variable assigned but never used
+    "E722",   # bare except
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["garmin_client", "garmin_mcp"]
 
