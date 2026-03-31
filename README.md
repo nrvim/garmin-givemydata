@@ -227,7 +227,7 @@ To start fresh, delete the data directory:
 rm -rf ~/.garmin-givemydata
 
 # Git clone
-rm -f garmin.db && rm -rf browser_profile_stealth
+rm -f garmin.db && rm -rf browser_profile
 ```
 
 ### Manual setup (if setup script doesn't work)
@@ -536,7 +536,7 @@ SQLite ──→ MCP server (AI queries)
 
 ## Troubleshooting
 
-**"Login failed"**: Delete the browser profile and run again for a fresh session. For pip/brew: `rm -rf ~/.garmin-givemydata/browser_profile`. For git clone: `rm -rf browser_profile_stealth/`.
+**"Login failed"**: Delete the browser profile and run again for a fresh session. For pip/brew: `rm -rf ~/.garmin-givemydata/browser_profile`. For git clone: `rm -rf browser_profile/`.
 
 **Script crashed / "Execution context was destroyed"**: You probably closed the Chrome window. Don't close it — the script needs the browser open to fetch data. Run again.
 

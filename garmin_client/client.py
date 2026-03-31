@@ -262,7 +262,7 @@ class GarminClient:
                 print(f"Page content: {body}")
             except Exception:
                 print(f"Login form not found. Current URL: {self._page.url}")
-            print("Try running with --visible or deleting browser_profile_stealth/")
+            print("Try running with --visible or deleting browser_profile/")
             return False
 
         email_input.click()

@@ -383,7 +383,7 @@ def download_activity_files(
     from garmin_client import GarminClient
 
     project_dir = Path(__file__).parent.parent
-    profile_dir = project_dir / "browser_profile_stealth"
+    profile_dir = project_dir / "browser_profile"
 
     env_file = project_dir / ".env"
     if env_file.exists():

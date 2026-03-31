@@ -35,7 +35,7 @@ def incremental_sync(target_date: str = None) -> dict:
     yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
 
     PROJECT_DIR = Path(__file__).parent.parent
-    PROFILE_DIR = PROJECT_DIR / "browser_profile_stealth"
+    PROFILE_DIR = PROJECT_DIR / "browser_profile"
 
     # Load .env if present
     import os
