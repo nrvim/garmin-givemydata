@@ -52,7 +52,7 @@ def full_range_rest(display_name: str, start_date: str, end_date: str) -> dict:
         "vo2max_trend": f"/gc-api/metrics-service/metrics/maxmet/daily/{start_date}/{end_date}",
         "personal_records": f"/gc-api/personalrecord-service/personalrecord/prs/{dn}",
         "personal_record_types": f"/gc-api/personalrecord-service/personalrecordtype/prtypes/{dn}",
-        "lactate_threshold": f"/gc-api/biometric-service/biometric/latestLactateThreshold",
+        "lactate_threshold": "/gc-api/biometric-service/biometric/latestLactateThreshold",
     }
 
 

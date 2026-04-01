@@ -251,7 +251,9 @@ examples:
     fetch_group.add_argument("--full", action="store_true", help="Force full historical fetch")
     fetch_group.add_argument("--days", type=int, help="Fetch last N days")
     fetch_group.add_argument("--since", type=str, help="Fetch from date (YYYY-MM-DD)")
-    fetch_group.add_argument("--save-raw", action="store_true", help="Save raw JSON responses to debug/raw for debugging")
+    fetch_group.add_argument(
+        "--save-raw", action="store_true", help="Save raw JSON responses to debug/raw for debugging"
+    )
     fetch_group.add_argument(
         "--no-files",
         action="store_true",

@@ -543,6 +543,7 @@ def garmin_sync(refresh: bool = True) -> str:
 # garmin_today
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
 def garmin_today() -> str:
     """Complete snapshot of today's health: daily summary, last night's sleep,

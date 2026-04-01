@@ -643,15 +643,23 @@ CREATE INDEX IF NOT EXISTS idx_act_weather ON activity_weather (activity_id);
 def migrate_training_status_table(conn: sqlite3.Connection) -> None:
     """Migrate the training_status table to include acute and chronic load columns."""
     cursor = conn.execute("PRAGMA table_info(training_status)")
-    cols = {row["name"] for row in cursor.fetchall()}
-
+    cols = {row[1] for row in cursor.fetchall()}
+    missing_cols = []
     if "acute_load" not in cols:
-        log.info("Migrating training_status table...")
-        try:
-            conn.execute("ALTER TABLE training_status ADD COLUMN acute_load REAL")
-            conn.execute("ALTER TABLE training_status ADD COLUMN chronic_load REAL")
-        except Exception as e:
-            log.debug("Migration note: %s", e)
+        missing_cols.append("acute_load")
+    if "chronic_load" not in cols:
+        missing_cols.append("chronic_load")
+
+    if missing_cols:
+        log.info(
+            "Migrating training_status table, adding columns: %s",
+            ", ".join(missing_cols),
+        )
+        for col in missing_cols:
+            try:
+                conn.execute(f"ALTER TABLE training_status ADD COLUMN {col} REAL")
+            except sqlite3.OperationalError as e:
+                log.debug("Migration note (training_status.%s): %s", col, e)
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -669,26 +677,35 @@ def init_db(conn: sqlite3.Connection) -> None:
 def migrate_device_table(conn: sqlite3.Connection) -> None:
     """Migrate the device table to include battery and software fields if missing."""
     cursor = conn.execute("PRAGMA table_info(device)")
-    cols = {row["name"] for row in cursor.fetchall()}
+    cols = {row[1] for row in cursor.fetchall()}
+    missing_defs = [
+        ("software_version", "TEXT"),
+        ("battery_status", "TEXT"),
+        ("battery_voltage", "REAL"),
+    ]
+    missing_cols = [name for name, _ in missing_defs if name not in cols]
 
-    if "battery_status" not in cols:
-        log.info("Migrating device table...")
-        try:
-            conn.execute("ALTER TABLE device ADD COLUMN software_version TEXT")
-            conn.execute("ALTER TABLE device ADD COLUMN battery_status TEXT")
-            conn.execute("ALTER TABLE device ADD COLUMN battery_voltage REAL")
-        except Exception as e:
-            log.debug("Migration note: %s", e)
+    if missing_cols:
+        log.info(
+            "Migrating device table, adding columns: %s",
+            ", ".join(missing_cols),
+        )
+        for name, col_type in missing_defs:
+            if name in cols:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE device ADD COLUMN {name} {col_type}")
+            except sqlite3.OperationalError as e:
+                log.debug("Migration note (device.%s): %s", name, e)
 
 
 def migrate_weight_table(conn: sqlite3.Connection) -> None:
     """Migrate the weight table to include the 'source' column and 'timestamp' PK if needed."""
     cursor = conn.execute("PRAGMA table_info(weight)")
-    cols = {row["name"] for row in cursor.fetchall()}
+    cols = {row[1] for row in cursor.fetchall()}
 
     # Check if we need to migrate (either missing 'source' or wrong PK)
     # The new schema has 'timestamp' as PK.
-    cursor = conn.execute("PRAGMA index_list(weight)")
     is_legacy = "timestamp" not in cols
 
     if is_legacy:
@@ -726,6 +743,14 @@ def migrate_weight_table(conn: sqlite3.Connection) -> None:
             DROP TABLE weight_old;
             """
         )
+        return
+
+    if "source" not in cols:
+        log.info("Migrating weight table, adding missing source column")
+        try:
+            conn.execute("ALTER TABLE weight ADD COLUMN source TEXT")
+        except sqlite3.OperationalError as e:
+            log.debug("Migration note (weight.source): %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -941,9 +966,7 @@ def backfill_calories_from_daily_summaries(conn: sqlite3.Connection) -> None:
 
 def cleanup_invalid_rows(conn: sqlite3.Connection) -> None:
     """Remove rows created by earlier permissive parsers."""
-    conn.execute(
-        "DELETE FROM hrv WHERE calendar_date IS NULL OR TRIM(calendar_date) = ''"
-    )
+    conn.execute("DELETE FROM hrv WHERE calendar_date IS NULL OR TRIM(calendar_date) = ''")
 
 
 def backfill_hrv_timeline_counts(conn: sqlite3.Connection) -> None:
@@ -1980,16 +2003,19 @@ def _extract_calories_records(data: Any, cal_date: str = None) -> list[dict]:
         return _extract_calories_records(data["data"], cal_date)
 
     record_date = data.get("calendarDate") or data.get("mealDate") or data.get("date") or cal_date
-    if any(
-        key in data
-        for key in (
-            "totalKilocalories",
-            "activeKilocalories",
-            "bmrKilocalories",
-            "consumedKilocalories",
-            "remainingKilocalories",
+    if (
+        any(
+            key in data
+            for key in (
+                "totalKilocalories",
+                "activeKilocalories",
+                "bmrKilocalories",
+                "consumedKilocalories",
+                "remainingKilocalories",
+            )
         )
-    ) and record_date:
+        and record_date
+    ):
         return [{**data, "calendarDate": record_date}]
 
     for key in ("mealSummaries", "meals", "dailyMeals", "items"):
@@ -2049,7 +2075,6 @@ def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str
             for rec in records:
                 upsert_sleep(conn, rec)
                 count += 1
-
 
         elif name == "heart_rate" or name == "heart_rate_detail":
             for rec in records:
@@ -2218,8 +2243,7 @@ def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str
                 if not isinstance(rec, dict):
                     continue
                 if rec.get("heartRateVariabilityScalar") is None and not any(
-                    rec.get(k)
-                    for k in ("calendarDate", "startTimestampLocal", "weeklyAvg", "lastNight", "status")
+                    rec.get(k) for k in ("calendarDate", "startTimestampLocal", "weeklyAvg", "lastNight", "status")
                 ):
                     continue
                 if not rec.get("calendarDate") and not rec.get("startTimestampLocal"):
