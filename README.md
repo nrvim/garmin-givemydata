@@ -41,7 +41,9 @@ pip install garmin-givemydata
 
 # or clone
 git clone https://github.com/nrvim/garmin-givemydata.git
-cd garmin-givemydata && ./setup.sh
+cd garmin-givemydata
+bash setup.sh          # macOS / Linux
+setup.bat              # Windows
 ```
 
 ### Fetch your data
