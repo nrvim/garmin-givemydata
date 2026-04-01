@@ -543,7 +543,6 @@ def garmin_sync(refresh: bool = True) -> str:
 # garmin_today
 # ---------------------------------------------------------------------------
 
-
 @mcp.tool()
 def garmin_today() -> str:
     """Complete snapshot of today's health: daily summary, last night's sleep,
@@ -617,11 +616,19 @@ def garmin_today() -> str:
             [today],
         )
 
+        ts = query(
+            conn,
+            """SELECT status, acute_load, chronic_load
+               FROM training_status WHERE calendar_date = ?""",
+            [today],
+        )
+
         result = {
             "date": today,
             "daily": daily[0] if daily else {},
             "last_night_sleep": sleep[0] if sleep else {},
             "training_readiness": tr[0] if tr else {},
+            "training_status": ts[0] if ts else {},
             "hrv": hrv[0] if hrv else {},
             "fitness_age": fitness[0] if fitness else {},
             "last_activity": last_activity[0] if last_activity else {},
@@ -712,12 +719,20 @@ def garmin_activity_detail(activity_id: int = 0, last: bool = False) -> str:
             [activity_id],
         )
 
+        dynamics = query(
+            conn,
+            """SELECT avg_gct, avg_gct_balance, avg_vert_osc, avg_vert_ratio, avg_stride_len
+               FROM running_dynamics WHERE activity_id = ?""",
+            [activity_id],
+        )
+
         result = {
             "activity": activity[0],
             "splits": splits if splits else [],
             "hr_zones": hr_zones[0] if hr_zones else {},
             "weather": weather[0] if weather else {},
             "exercise_sets": [s for s in exercise_sets if s.get("exercise_name")] if exercise_sets else [],
+            "running_dynamics": dynamics[0] if dynamics else {},
         }
         return json.dumps(result, indent=2, default=str)
     finally:
@@ -1419,16 +1434,18 @@ def garmin_body_composition() -> str:
     try:
         rows = query(
             conn,
-            """SELECT calendar_date,
+            """SELECT timestamp,
+                      calendar_date,
                       ROUND(weight / 1000.0, 1) AS weight_kg,
                       ROUND(bmi, 1) AS bmi,
                       ROUND(body_fat, 1) AS body_fat_pct,
                       ROUND(body_water, 1) AS body_water_pct,
                       ROUND(bone_mass / 1000.0, 2) AS bone_mass_kg,
-                      ROUND(muscle_mass / 1000.0, 1) AS muscle_mass_kg
+                      ROUND(muscle_mass / 1000.0, 1) AS muscle_mass_kg,
+                      source
                FROM weight
                WHERE weight IS NOT NULL
-               ORDER BY calendar_date DESC""",
+               ORDER BY timestamp DESC""",
         )
         if not rows:
             return json.dumps({"error": "No weight data found."})
@@ -1655,7 +1672,7 @@ def garmin_training_status(days: int = 90) -> str:
     try:
         rows = query(
             conn,
-            """SELECT calendar_date, status
+            """SELECT calendar_date, status, acute_load, chronic_load
                FROM training_status
                WHERE calendar_date >= ?
                ORDER BY calendar_date""",
