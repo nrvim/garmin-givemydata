@@ -121,6 +121,7 @@ def fetch_direct_to_db(
     conn,
     start_date: str,
     end_date: str,
+    save_raw: bool = False,
 ) -> None:
     """Fetch data and save each batch directly to SQLite."""
     counts = {}
@@ -157,6 +158,7 @@ def fetch_direct_to_db(
             end_date=end_date,
             on_batch=on_batch,
             known_activity_ids=known_activity_ids,
+            save_raw=save_raw,
         )
     else:
         # Calculate total chunks for progress reporting
@@ -184,6 +186,7 @@ def fetch_direct_to_db(
                 end_date=chunk_end.isoformat(),
                 on_batch=on_batch,
                 known_activity_ids=known_activity_ids,
+                save_raw=save_raw,
             )
 
             new_total = sum(counts.values())
@@ -248,6 +251,9 @@ examples:
     fetch_group.add_argument("--full", action="store_true", help="Force full historical fetch")
     fetch_group.add_argument("--days", type=int, help="Fetch last N days")
     fetch_group.add_argument("--since", type=str, help="Fetch from date (YYYY-MM-DD)")
+    fetch_group.add_argument(
+        "--save-raw", action="store_true", help="Save raw JSON responses to debug/raw for debugging"
+    )
     fetch_group.add_argument(
         "--no-files",
         action="store_true",
@@ -554,7 +560,7 @@ examples:
             print("Login failed!")
             sys.exit(1)
 
-        fetch_direct_to_db(client, conn, start, end)
+        fetch_direct_to_db(client, conn, start, end, save_raw=args.save_raw)
 
         # Report actual row counts from the database (not upsert operations)
         tables = db_query(

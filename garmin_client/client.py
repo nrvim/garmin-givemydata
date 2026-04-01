@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from playwright.sync_api import BrowserContext, Page, sync_playwright
 
@@ -179,6 +179,7 @@ class GarminClient:
         self._page: Optional[Page] = None
         self._csrf: Optional[str] = None
         self._display_name: Optional[str] = None
+        self._save_raw_enabled = False
 
         # Select engine
         if engine == "chrome":
@@ -219,23 +220,29 @@ class GarminClient:
                 print("Already logged in (session restored)")
                 self._engine.save_session(self._page, self.session_file)
                 return True
-            # CSRF failed — page looks like app but session is invalid
-            # Navigate back to SSO for fresh login
-            log.debug("On app page but no CSRF — session invalid, proceeding with login")
+            # If we are on a connect page but CSRF failed, don't clear cookies yet.
+            # Just try one navigation to /modern/ to see if it wakes up.
+            log.debug("On app page but no CSRF — attempting to refresh context")
             try:
-                self._page.goto(SSO_LOGIN_URL, wait_until="domcontentloaded")
+                self._page.goto("https://connect.garmin.com/modern/", wait_until="domcontentloaded")
                 time.sleep(3)
+                if self._post_login_setup():
+                    print("Already logged in (session restored after refresh)")
+                    self._engine.save_session(self._page, self.session_file)
+                    return True
             except Exception:
                 pass
 
         print("Logging in...")
 
-        # Clear stale SSO/Garmin cookies to prevent login loops
-        try:
-            self._context.clear_cookies()
-            log.debug("Cleared stale cookies")
-        except Exception as e:
-            log.debug("Cookie clear error: %s", e)
+        # Only clear cookies if we are absolutely sure we need a fresh login
+        # and we are currently on the SSO page.
+        if self._is_on_login_page():
+            try:
+                self._context.clear_cookies()
+                log.debug("Cleared stale cookies for fresh login")
+            except Exception as e:
+                log.debug("Cookie clear error: %s", e)
 
         # Navigate to SSO — may need retries on fresh profiles
         for attempt in range(3):
@@ -466,24 +473,14 @@ class GarminClient:
         return "sso.garmin.com" in url or "signin" in url or "sign-in" in url
 
     def _post_login_setup(self) -> bool:
-        # Make sure we're on the /modern/ page which has the CSRF meta tag
-        current = self._page.url
-        if "/modern/" not in current:
-            log.debug("Navigating to /modern/ for CSRF (was on %s)", current)
-            try:
-                self._page.goto(
-                    "https://connect.garmin.com/modern/",
-                    wait_until="domcontentloaded",
-                )
-            except Exception:
-                pass
-            time.sleep(3)
-
-        setup = self._page.evaluate("""
+        # Check if we already have CSRF on the current page before navigating
+        setup_js = """
             async () => {
                 const csrf = document.querySelector(
                     'meta[name="csrf-token"], meta[name="_csrf"]'
                 )?.content;
+                if (!csrf) return {csrf: null};
+
                 const h = {'connect-csrf-token': csrf};
                 const resp = await fetch(
                     '/gc-api/userprofile-service/socialProfile',
@@ -492,14 +489,78 @@ class GarminClient:
                 const profile = resp.status === 200 ? await resp.json() : null;
                 return {csrf, displayName: profile?.displayName};
             }
-        """)
-        self._csrf = setup.get("csrf")
-        self._display_name = setup.get("displayName")
+        """
+
+        try:
+            setup = self._page.evaluate(setup_js)
+            if setup.get("csrf"):
+                self._csrf = setup.get("csrf")
+                self._display_name = setup.get("displayName")
+                log.info("Session verified: %s (CSRF present)", self._display_name)
+                return True
+        except Exception:
+            pass
+
+        # If we got here, we need to try navigating to /modern/ to find the token
+        current = self._page.url
+        if "/modern/" not in current:
+            log.debug("Navigating to /modern/ for CSRF (was on %s)", current)
+            try:
+                self._page.goto(
+                    "https://connect.garmin.com/modern/",
+                    wait_until="domcontentloaded",
+                )
+                time.sleep(3)
+            except Exception:
+                pass
+
+        try:
+            setup = self._page.evaluate(setup_js)
+            self._csrf = setup.get("csrf")
+            self._display_name = setup.get("displayName")
+        except Exception:
+            return False
+
         if not self._csrf:
             log.debug("Could not extract CSRF token")
             return False
         log.info("Display name: %s", self._display_name)
         return True
+
+    def _save_raw(self, name: str, data: Any):
+        """Save raw JSON to the data directory without overwriting prior captures."""
+        if not self.profile_dir:
+            return
+        raw_dir = self.profile_dir.parent / "debug" / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = name.replace("/", "_").replace("?", "_").replace("=", "_").replace(":", "_")
+        try:
+            payload = json.dumps(data, indent=2, sort_keys=True)
+            file_path = raw_dir / f"{safe_name}.json"
+
+            if file_path.exists():
+                try:
+                    if file_path.read_text() == payload:
+                        return
+                except Exception:
+                    pass
+
+                suffix = 2
+                while True:
+                    candidate = raw_dir / f"{safe_name}__{suffix}.json"
+                    if not candidate.exists():
+                        file_path = candidate
+                        break
+                    try:
+                        if candidate.read_text() == payload:
+                            return
+                    except Exception:
+                        pass
+                    suffix += 1
+
+            file_path.write_text(payload)
+        except Exception as e:
+            log.debug("Could not save raw data: %s", e)
 
     def _fetch_batch(self, rest: dict, gql: dict) -> dict:
         """Fetch a batch of REST + GraphQL endpoints in parallel via browser."""
@@ -518,7 +579,7 @@ class GarminClient:
         rest_entries = list(rest.items())
         gql_entries = list(gql.items())
 
-        return self._page.evaluate(
+        results = self._page.evaluate(
             """
             async ([csrf, restEntries, gqlEntries]) => {
                 const h = {'connect-csrf-token': csrf, 'Accept': 'application/json'};
@@ -564,6 +625,16 @@ class GarminClient:
             [self._csrf, rest_entries, gql_entries],
         )
 
+        # Save raw payloads and failures for later replay/debugging.
+        if self._save_raw_enabled and results:
+            for name, res in results.items():
+                if res.get("status") == 200 and res.get("data") is not None:
+                    self._save_raw(name, res["data"])
+                else:
+                    self._save_raw(name, res)
+
+        return results
+
     def _date_chunks(self, start: str, end: str, max_days: int = 28) -> list:
         """Split a date range into chunks of max_days."""
         chunks = []
@@ -582,6 +653,7 @@ class GarminClient:
         end_date: Optional[str] = None,
         on_batch=None,
         known_activity_ids: Optional[set] = None,
+        save_raw: bool = False,
     ) -> dict:
         """Fetch all data from Garmin Connect.
 
@@ -594,7 +666,11 @@ class GarminClient:
         known_activity_ids : set, optional
             Activity IDs that already have detail data (splits, HR zones, weather).
             These will be skipped during per-activity detail fetching.
+        save_raw : bool, default False
+            Whether to save raw JSON responses under the ``debug/raw`` directory
+            in the data directory (next to ``browser_profile``).
         """
+        self._save_raw_enabled = save_raw
         today = target_date or date.today().isoformat()
         e_date = end_date or today
         s_date = start_date or (date.fromisoformat(today) - timedelta(days=30)).isoformat()

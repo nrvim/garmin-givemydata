@@ -14,7 +14,7 @@ from garmin_mcp.db import get_connection, init_db, save_to_db
 logger = logging.getLogger(__name__)
 
 
-def incremental_sync(target_date: str = None) -> dict:
+def incremental_sync(target_date: str = None, save_raw: bool = False) -> dict:
     """Fetch today's data from Garmin and save directly to the database.
 
     Parameters
@@ -22,6 +22,9 @@ def incremental_sync(target_date: str = None) -> dict:
     target_date:
         ISO date string (``YYYY-MM-DD``) to treat as "today".  Defaults to
         the actual current date.
+    save_raw:
+        Whether to save raw JSON responses under the ``debug/raw`` directory
+        in the data directory (next to ``browser_profile``).
 
     Returns
     -------
@@ -88,6 +91,7 @@ def incremental_sync(target_date: str = None) -> dict:
             start_date=yesterday,
             end_date=today,
             on_batch=on_batch,
+            save_raw=save_raw,
         )
     finally:
         client.close()
