@@ -18,7 +18,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
@@ -117,6 +117,7 @@ class GarminClient:
         self._xvfb_proc = None
         self._xvfb_display = None
         self._xvfb_prev_display = None
+        self._save_raw_enabled = False
 
     # ── Display management ───────────────────────────────────────
 
@@ -368,20 +369,28 @@ class GarminClient:
                 print("Already logged in (session restored)")
                 self._save_session()
                 return True
-            log.debug("On app page but no CSRF — session invalid, proceeding with login")
+            # If we are on a connect page but CSRF failed, don't clear cookies yet.
+            # Just try one navigation to /modern/ to see if it wakes up.
+            log.debug("On app page but no CSRF — attempting to refresh context")
             try:
-                self._uc_navigate(SSO_LOGIN_URL, 12)
+                self._uc_navigate("https://connect.garmin.com/modern/", 12)
                 time.sleep(3)
+                if self._post_login_setup():
+                    print("Already logged in (session restored after refresh)")
+                    self._save_session()
+                    return True
             except Exception:
                 pass
 
         print("Logging in...")
 
-        try:
-            self._driver.delete_all_cookies()
-            log.debug("Cleared stale cookies")
-        except Exception as e:
-            log.debug("Cookie clear error: %s", e)
+        # Only clear cookies if we are on the SSO login page (fresh login needed)
+        if self._is_on_login_page():
+            try:
+                self._driver.delete_all_cookies()
+                log.debug("Cleared stale cookies for fresh login")
+            except Exception as e:
+                log.debug("Cookie clear error: %s", e)
 
         for attempt in range(3):
             try:
@@ -735,6 +744,43 @@ class GarminClient:
             return bytes(result["data"])
         return None
 
+    # ── Save raw debug data ─────────────────────────────────────
+
+    def _save_raw(self, name: str, data):
+        """Save raw JSON response under the ``debug/raw`` directory (next to browser_profile)."""
+        if not self.profile_dir:
+            return
+        raw_dir = self.profile_dir.parent / "debug" / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = name.replace("/", "_").replace("?", "_").replace("=", "_").replace(":", "_")
+        try:
+            payload = json.dumps(data, indent=2, sort_keys=True)
+            file_path = raw_dir / f"{safe_name}.json"
+
+            if file_path.exists():
+                try:
+                    if file_path.read_text() == payload:
+                        return
+                except Exception:
+                    pass
+
+                suffix = 2
+                while True:
+                    candidate = raw_dir / f"{safe_name}__{suffix}.json"
+                    if not candidate.exists():
+                        file_path = candidate
+                        break
+                    try:
+                        if candidate.read_text() == payload:
+                            return
+                    except Exception:
+                        pass
+                    suffix += 1
+
+            file_path.write_text(payload)
+        except Exception as e:
+            log.debug("Could not save raw data: %s", e)
+
     # ── Batch fetching ───────────────────────────────────────────
 
     def _fetch_batch(self, rest: dict, gql: dict) -> dict:
@@ -802,6 +848,15 @@ class GarminClient:
         if result and "error" in result:
             log.warning("_fetch_batch JS error: %s", result["error"])
             return {}
+
+        # Save raw payloads and failures for later replay/debugging.
+        if self._save_raw_enabled and result:
+            for name, res in result.items():
+                if res.get("status") == 200 and res.get("data") is not None:
+                    self._save_raw(name, res["data"])
+                else:
+                    self._save_raw(name, res)
+
         return result or {}
 
     def _date_chunks(self, start: str, end: str, max_days: int = 28) -> list:
@@ -822,6 +877,7 @@ class GarminClient:
         end_date: Optional[str] = None,
         on_batch=None,
         known_activity_ids: Optional[set] = None,
+        save_raw: bool = False,
     ) -> dict:
         """Fetch all data from Garmin Connect.
 
@@ -831,8 +887,13 @@ class GarminClient:
             ``on_batch(endpoint_name, data, cal_date=None)`` called after each
             successful fetch.
         known_activity_ids : set, optional
-            Activity IDs that already have detail data — these will be skipped.
+            Activity IDs that already have detail data (splits, HR zones, weather).
+            These will be skipped during per-activity detail fetching.
+        save_raw : bool, default False
+            Whether to save raw JSON responses under the ``debug/raw`` directory
+            (next to ``browser_profile``).
         """
+        self._save_raw_enabled = save_raw
         today = target_date or date.today().isoformat()
         e_date = end_date or today
         s_date = start_date or (date.fromisoformat(today) - timedelta(days=30)).isoformat()

@@ -12,6 +12,7 @@ export_test/
 fit/
 test_everything.py
 tests/
+debug/
 dist/
 *.egg-info/
 *.db-shm
