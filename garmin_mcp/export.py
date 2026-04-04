@@ -437,32 +437,19 @@ def download_activity_files(
                 continue
 
             url = url_pattern.format(id=aid)
-            result = client._page.evaluate(
-                f"""
-                async () => {{
-                    try {{
-                        const csrf = document.querySelector(
-                            'meta[name="csrf-token"], meta[name="_csrf"]'
-                        )?.content;
-                        const resp = await fetch('{url}', {{
-                            credentials: 'include',
-                            headers: {{'connect-csrf-token': csrf || ''}}
-                        }});
-                        if (resp.status !== 200) return {{status: resp.status}};
-                        const buffer = await resp.arrayBuffer();
-                        return {{status: 200, data: Array.from(new Uint8Array(buffer))}};
-                    }} catch(e) {{
-                        return {{status: 'error', msg: e.message}};
-                    }}
-                }}
-            """
-            )
-
-            if result.get("status") == 200 and result.get("data"):
-                with open(filepath, "wb") as f:
-                    f.write(bytes(result["data"]))
-                downloaded += 1
-            else:
+            abs_url = f"https://connect.garmin.com{url}"
+            try:
+                response = client._page.context.request.get(
+                    abs_url,
+                    headers={"connect-csrf-token": client._csrf or ""},
+                )
+                if response.ok:
+                    with open(filepath, "wb") as f:
+                        f.write(response.body())
+                    downloaded += 1
+                else:
+                    failed += 1
+            except Exception:
                 failed += 1
 
             if downloaded > 0 and (downloaded % 10) == 0:
