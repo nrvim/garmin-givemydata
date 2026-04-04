@@ -480,6 +480,7 @@ examples:
 
             print(f"Downloading {len(activities)} FIT file(s)...")
             downloaded = 0
+            failed = 0
             for a in activities:
                 aid = a.get("activityId")
                 name = a.get("activityName", "")
@@ -497,35 +498,26 @@ examples:
                     print(f"  {filename} (already exists)")
                     continue
 
-                url = f"/gc-api/download-service/files/activity/{aid}"
-                result = client._page.evaluate(
-                    f"""
-                    async () => {{
-                        try {{
-                            const csrf = document.querySelector(
-                                'meta[name="csrf-token"], meta[name="_csrf"]'
-                            )?.content;
-                            const resp = await fetch('{url}', {{
-                                credentials: 'include',
-                                headers: {{'connect-csrf-token': csrf || ''}}
-                            }});
-                            if (resp.status !== 200) return {{status: resp.status}};
-                            const buffer = await resp.arrayBuffer();
-                            return {{status: 200, data: Array.from(new Uint8Array(buffer))}};
-                        }} catch(e) {{
-                            return {{status: 'error'}};
-                        }}
-                    }}
-                """
-                )
+                abs_url = f"https://connect.garmin.com/gc-api/download-service/files/activity/{aid}"
+                try:
+                    response = client._page.context.request.get(
+                        abs_url,
+                        headers={"connect-csrf-token": client._csrf or ""},
+                    )
+                    if response.ok:
+                        with open(filepath, "wb") as f:
+                            f.write(response.body())
+                        downloaded += 1
+                        print(f"  {filename}")
+                    else:
+                        failed += 1
+                except Exception:
+                    failed += 1
 
-                if result.get("status") == 200 and result.get("data"):
-                    with open(filepath, "wb") as f:
-                        f.write(bytes(result["data"]))
-                    downloaded += 1
-                    print(f"  {filename}")
-
-            print(f"\n{downloaded} FIT file(s) downloaded to {fit_dir}/")
+            summary = f"\n{downloaded} FIT file(s) downloaded to {fit_dir}/"
+            if failed:
+                summary += f" ({failed} failed)"
+            print(summary)
         finally:
             client.close()
         return
@@ -603,6 +595,7 @@ examples:
                 time.sleep(2)
 
                 downloaded = 0
+                failed = 0
                 for i, (aid, name, date_str) in enumerate(new_activities):
                     safe_name = ""
                     if name:
@@ -613,32 +606,20 @@ examples:
                     filename = f"{safe_date}_{aid}{safe_name}.zip"
                     filepath = fit_dir / filename
 
-                    url = f"/gc-api/download-service/files/activity/{aid}"
-                    result = client._page.evaluate(
-                        f"""
-                        async () => {{
-                            try {{
-                                const csrf = document.querySelector(
-                                    'meta[name="csrf-token"], meta[name="_csrf"]'
-                                )?.content;
-                                const resp = await fetch('{url}', {{
-                                    credentials: 'include',
-                                    headers: {{'connect-csrf-token': csrf || ''}}
-                                }});
-                                if (resp.status !== 200) return {{status: resp.status}};
-                                const buffer = await resp.arrayBuffer();
-                                return {{status: 200, data: Array.from(new Uint8Array(buffer))}};
-                            }} catch(e) {{
-                                return {{status: 'error'}};
-                            }}
-                        }}
-                    """
-                    )
-
-                    if result.get("status") == 200 and result.get("data"):
-                        with open(filepath, "wb") as f:
-                            f.write(bytes(result["data"]))
-                        downloaded += 1
+                    abs_url = f"https://connect.garmin.com/gc-api/download-service/files/activity/{aid}"
+                    try:
+                        response = client._page.context.request.get(
+                            abs_url,
+                            headers={"connect-csrf-token": client._csrf or ""},
+                        )
+                        if response.ok:
+                            with open(filepath, "wb") as f:
+                                f.write(response.body())
+                            downloaded += 1
+                        else:
+                            failed += 1
+                    except Exception:
+                        failed += 1
 
                     if downloaded > 0 and downloaded % 10 == 0:
                         print(f"  {downloaded}/{len(new_activities)} downloaded...")
@@ -646,7 +627,10 @@ examples:
                     if i % 20 == 19:
                         time.sleep(1)
 
-                print(f"  FIT files: {downloaded} downloaded to {fit_dir}/")
+                summary = f"  FIT files: {downloaded} downloaded to {fit_dir}/"
+                if failed:
+                    summary += f" ({failed} failed)"
+                print(summary)
             else:
                 print(f"\nFIT files: all {len(existing_fits)} already downloaded")
 
