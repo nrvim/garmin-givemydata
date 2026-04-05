@@ -4,6 +4,8 @@ Garmin Connect Client using Playwright for authentication and data fetching.
 
 import json
 import logging
+import os as _os
+import shutil
 import sys
 import time
 from datetime import date, datetime, timedelta
@@ -100,49 +102,101 @@ class _CamoufoxEngine:
     def _resolve_headless(self, headless: bool):
         """Pick the safest headless mode for the current platform.
 
-        On Linux we prefer Camoufox's built-in virtual display (Xvfb) because
-        plain ``headless=True`` is still fingerprintable. Falls back to regular
-        headless if Xvfb isn't installed.
+        - If the caller wants a visible browser, always return ``False``.
+        - If an X display is already present (``$DISPLAY`` set — e.g. the
+          user is invoking us under ``xvfb-run`` or inside a real X session),
+          reuse it by returning ``False``. Camoufox's ``"virtual"`` mode
+          unconditionally spawns its own Xvfb via ``subprocess.Popen`` and
+          does not consult ``$DISPLAY``, so returning ``"virtual"`` here
+          would nest a second Xvfb inside the caller's — exactly the kind
+          of display-stack oddness that was flaky in issue #11.
+        - Otherwise on Linux, prefer Camoufox's built-in virtual display if
+          ``Xvfb`` is installed (stealthier than plain headless).
+        - Fall back to plain ``headless=True`` everywhere else.
         """
         if not headless:
             return False
         if sys.platform.startswith("linux"):
-            import shutil
-
+            if _os.environ.get("DISPLAY"):
+                log.info("$DISPLAY is set — reusing existing X display instead of nesting Xvfb.")
+                return False
             if shutil.which("Xvfb"):
                 return "virtual"
             log.info("Xvfb not found — falling back to plain headless. Install xvfb for better Cloudflare bypass.")
         return True
 
     def _build_kwargs(self, profile_dir: Path, headless: bool) -> dict:
+        # NOTE: We intentionally do NOT pin ``locale`` or ``os`` here.
+        # ``geoip=True`` derives timezone, locale, lat/lon, and country from the
+        # egress IP. Pinning ``locale=en-US`` while geoip picks a non-US timezone
+        # (or pinning ``os=windows`` while the rest of the fingerprint is
+        # otherwise randomized) produces internally inconsistent fingerprints
+        # that Cloudflare's bot-score model readily flags. Letting Camoufox
+        # auto-derive these from the IP gives a coherent profile.
         return dict(
             persistent_context=True,
             user_data_dir=str(profile_dir),
             humanize=True,
-            locale=["en-US"],
-            os="windows",
             geoip=True,
             headless=self._resolve_headless(headless),
         )
+
+    def _cleanup_stale_locks(self, profile_dir: Path) -> None:
+        """Remove Firefox profile lock files left behind by unclean exits.
+
+        After a crash, SIGKILL, or SSH disconnect, Firefox leaves
+        ``parent.lock`` / ``.parentlock`` / ``lock`` in ``user_data_dir`` and
+        the next ``launch_persistent_context`` call fails with
+        "Firefox is already running". We best-effort remove them.
+        """
+        for name in ("parent.lock", ".parentlock", "lock"):
+            p = profile_dir / name
+            try:
+                if p.exists() or p.is_symlink():
+                    p.unlink()
+                    log.debug("Removed stale profile lock: %s", p)
+            except Exception as e:
+                log.debug("Could not remove lock %s: %s", p, e)
 
     def launch(self, profile_dir: Path, headless: bool, session_file: Path = None):
         """Launch Camoufox with a persistent context. Returns (context, page, None, cm)."""
         from camoufox.sync_api import Camoufox
 
         profile_dir.mkdir(parents=True, exist_ok=True)
+        self._cleanup_stale_locks(profile_dir)
         kwargs = self._build_kwargs(profile_dir, headless)
 
-        cm = Camoufox(**kwargs)
         try:
-            context = cm.__enter__()
-        except TypeError:
-            # Older Camoufox without persistent_context — degrade gracefully
-            log.warning("Camoufox is too old for persistent_context; upgrade with: pip install -U camoufox")
-            cm = Camoufox(headless=kwargs["headless"], humanize=True, locale=["en-US"], os="windows", geoip=True)
+            cm = Camoufox(**kwargs)
+        except TypeError as e:
+            # Older Camoufox without persistent_context/geoip — degrade gracefully.
+            # The TypeError is raised at construction, not at __enter__.
+            log.warning(
+                "Camoufox is too old for persistent_context (%s); upgrade with: pip install -U 'camoufox>=0.4.11'",
+                e,
+            )
+            cm = Camoufox(headless=kwargs["headless"], humanize=True)
             browser = cm.__enter__()
             page = browser.new_page()
             self._load_legacy_session(page.context, session_file)
             return (page.context, page, None, cm)
+
+        try:
+            context = cm.__enter__()
+        except FileNotFoundError as e:
+            # Most common cause: geoip=True needs the MaxMind GeoLite2 DB,
+            # which is downloaded by ``python -m camoufox fetch`` — not by
+            # ``pip install``. Give the user an actionable message and retry
+            # once without geoip so the tool still works offline.
+            log.warning(
+                "Camoufox launch failed (%s). If this mentions a GeoLite DB, run: "
+                "python -m camoufox fetch   — retrying once without geoip.",
+                e,
+            )
+            retry_kwargs = dict(kwargs)
+            retry_kwargs.pop("geoip", None)
+            cm = Camoufox(**retry_kwargs)
+            context = cm.__enter__()
 
         # With persistent_context=True, __enter__ returns a BrowserContext directly.
         try:
@@ -206,8 +260,6 @@ class _CamoufoxEngine:
         Primary persistence is the user_data_dir profile; this JSON is an
         extra, portable backup that also powers legacy-migration on upgrade.
         """
-        import os
-
         if not session_file:
             return
         try:
@@ -215,14 +267,12 @@ class _CamoufoxEngine:
         except Exception as e:
             log.debug("Could not read cookies for session export: %s", e)
             return
-        garmin_cookies = [
-            c for c in cookies if "garmin" in c.get("domain", "") or "cloudflare" in c.get("domain", "")
-        ]
+        garmin_cookies = [c for c in cookies if "garmin" in c.get("domain", "")]
         if not garmin_cookies:
             return
         session = {"cookies": garmin_cookies, "saved_at": time.time()}
-        fd = os.open(str(session_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
+        fd = _os.open(str(session_file), _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
+        with _os.fdopen(fd, "w") as f:
             json.dump(session, f, indent=2)
         log.info("Session saved: %d cookies to %s", len(garmin_cookies), session_file)
 
