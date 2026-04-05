@@ -88,58 +88,136 @@ class _ChromeEngine:
 
 
 class _CamoufoxEngine:
-    """Browser engine using Camoufox (custom Firefox) -- bypasses Cloudflare headless."""
+    """Browser engine using Camoufox (anti-detect Firefox) — bypasses Cloudflare headless.
+
+    Uses a persistent browser context (``user_data_dir``) so the full browser
+    state — cookies, localStorage, IndexedDB, cache, Cloudflare ``cf_clearance``,
+    and the generated fingerprint — is reused across runs. This is the key to
+    keeping long-lived Garmin sessions: Cloudflare pins clearance to a specific
+    fingerprint + storage combo, and any drift triggers a re-challenge.
+    """
+
+    def _resolve_headless(self, headless: bool):
+        """Pick the safest headless mode for the current platform.
+
+        On Linux we prefer Camoufox's built-in virtual display (Xvfb) because
+        plain ``headless=True`` is still fingerprintable. Falls back to regular
+        headless if Xvfb isn't installed.
+        """
+        if not headless:
+            return False
+        if sys.platform.startswith("linux"):
+            import shutil
+
+            if shutil.which("Xvfb"):
+                return "virtual"
+            log.info("Xvfb not found — falling back to plain headless. Install xvfb for better Cloudflare bypass.")
+        return True
+
+    def _build_kwargs(self, profile_dir: Path, headless: bool) -> dict:
+        return dict(
+            persistent_context=True,
+            user_data_dir=str(profile_dir),
+            humanize=True,
+            locale=["en-US"],
+            os="windows",
+            geoip=True,
+            headless=self._resolve_headless(headless),
+        )
 
     def launch(self, profile_dir: Path, headless: bool, session_file: Path = None):
-        """Launch Camoufox. Returns (context, page, None, browser)."""
+        """Launch Camoufox with a persistent context. Returns (context, page, None, cm)."""
         from camoufox.sync_api import Camoufox
 
-        browser = Camoufox(headless=headless).__enter__()
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        kwargs = self._build_kwargs(profile_dir, headless)
+
+        cm = Camoufox(**kwargs)
         try:
+            context = cm.__enter__()
+        except TypeError:
+            # Older Camoufox without persistent_context — degrade gracefully
+            log.warning("Camoufox is too old for persistent_context; upgrade with: pip install -U camoufox")
+            cm = Camoufox(headless=kwargs["headless"], humanize=True, locale=["en-US"], os="windows", geoip=True)
+            browser = cm.__enter__()
             page = browser.new_page()
+            self._load_legacy_session(page.context, session_file)
+            return (page.context, page, None, cm)
+
+        # With persistent_context=True, __enter__ returns a BrowserContext directly.
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
         except Exception:
-            browser.close()
-            raise
-        context = page.context
-
-        # Load saved session cookies if available
-        if session_file and session_file.exists():
             try:
-                session = json.loads(session_file.read_text())
-                saved_at = session.get("saved_at", 0)
-                age_days = (time.time() - saved_at) / 86400
-                if age_days < 364 and session.get("cookies"):
-                    context.add_cookies(session["cookies"])
-                    log.info(
-                        "Loaded %d cookies from session (%.0f days old)",
-                        len(session["cookies"]),
-                        age_days,
-                    )
-            except Exception as e:
-                log.debug("Could not load session: %s", e)
+                cm.__exit__(None, None, None)
+            except Exception:
+                pass
+            raise
 
-        return (context, page, None, browser)
+        # Migration: if the persistent profile is fresh but a legacy session.json
+        # exists, import those cookies so users upgrading from <0.1.8 don't need
+        # to re-login once.
+        try:
+            profile_has_state = any(profile_dir.rglob("cookies.sqlite")) or any(profile_dir.rglob("places.sqlite"))
+        except Exception:
+            profile_has_state = False
+        if not profile_has_state:
+            self._load_legacy_session(context, session_file)
+
+        return (context, page, None, cm)
+
+    def _load_legacy_session(self, context, session_file: Path):
+        if not session_file or not session_file.exists():
+            return
+        try:
+            session = json.loads(session_file.read_text())
+            age_days = (time.time() - session.get("saved_at", 0)) / 86400
+            if age_days < 364 and session.get("cookies"):
+                context.add_cookies(session["cookies"])
+                log.info(
+                    "Migrated %d legacy cookies from session.json (%.0f days old)",
+                    len(session["cookies"]),
+                    age_days,
+                )
+        except Exception as e:
+            log.debug("Legacy session migration failed: %s", e)
 
     def has_valid_session(self, profile_dir: Path, session_file: Path) -> bool:
-        """Check if session JSON file exists with valid cookies."""
+        """Session is valid if either the persistent profile has auth state
+        or a legacy session.json file is present and fresh."""
+        try:
+            if profile_dir and profile_dir.exists():
+                if any(profile_dir.rglob("cookies.sqlite")):
+                    return True
+        except Exception:
+            pass
         if not session_file or not session_file.exists():
             return False
         try:
             session = json.loads(session_file.read_text())
             age_days = (time.time() - session.get("saved_at", 0)) / 86400
-            has_cookies = bool(session.get("cookies"))
-            return has_cookies and age_days < 364
+            return bool(session.get("cookies")) and age_days < 364
         except Exception:
             return False
 
     def save_session(self, page, session_file: Path):
-        """Save cookies to JSON file."""
+        """Export cookies to a portable JSON file.
+
+        Primary persistence is the user_data_dir profile; this JSON is an
+        extra, portable backup that also powers legacy-migration on upgrade.
+        """
         import os
 
         if not session_file:
             return
-        cookies = page.context.cookies()
-        garmin_cookies = [c for c in cookies if "garmin" in c.get("domain", "") or "cloudflare" in c.get("domain", "")]
+        try:
+            cookies = page.context.cookies()
+        except Exception as e:
+            log.debug("Could not read cookies for session export: %s", e)
+            return
+        garmin_cookies = [
+            c for c in cookies if "garmin" in c.get("domain", "") or "cloudflare" in c.get("domain", "")
+        ]
         if not garmin_cookies:
             return
         session = {"cookies": garmin_cookies, "saved_at": time.time()}
@@ -149,10 +227,20 @@ class _CamoufoxEngine:
         log.info("Session saved: %d cookies to %s", len(garmin_cookies), session_file)
 
     def close(self, context, playwright, browser_ref):
-        """Close Camoufox browser."""
-        if browser_ref:
+        """Close the Camoufox persistent context and shut down the browser.
+
+        ``browser_ref`` holds the Camoufox context manager; calling ``__exit__``
+        properly tears down the browser process AND the virtual display (if any).
+        """
+        if browser_ref is not None:
             try:
-                browser_ref.close()
+                browser_ref.__exit__(None, None, None)
+                return
+            except Exception:
+                pass
+        if context is not None:
+            try:
+                context.close()
             except Exception:
                 pass
 

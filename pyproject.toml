@@ -34,7 +34,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-camoufox = ["camoufox>=0.4"]
+camoufox = ["camoufox>=0.4.11"]
 
 [project.urls]
 Homepage = "https://github.com/nrvim/garmin-givemydata"
