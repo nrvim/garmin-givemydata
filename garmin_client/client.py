@@ -97,33 +97,138 @@ class _CamoufoxEngine:
     and the generated fingerprint — is reused across runs. This is the key to
     keeping long-lived Garmin sessions: Cloudflare pins clearance to a specific
     fingerprint + storage combo, and any drift triggers a re-challenge.
+
+    On Linux headless servers, we deliberately avoid Camoufox's built-in
+    ``headless="virtual"`` mode: Camoufox hardcodes its Xvfb to a 1×1 pixel
+    screen (see ``camoufox/virtdisplay.py`` and daijro/camoufox#458), which
+    breaks rendering on complex sites and produces a distinctive viewport
+    fingerprint. Instead, when no ``$DISPLAY`` is present we spawn our own
+    Xvfb at a realistic desktop size (1280×1024×24) and launch Camoufox
+    non-headless against that display. This matches what ``xvfb-run`` users
+    already get on working setups and removes the known 1×1 footgun.
     """
 
-    def _resolve_headless(self, headless: bool):
-        """Pick the safest headless mode for the current platform.
+    # Realistic desktop size for our own Xvfb. 1280×1024 is the most common
+    # Linux desktop resolution in the Firefox ESR telemetry distribution, and
+    # matches what Camoufox's own fingerprint database samples from.
+    _XVFB_SCREEN = "1280x1024x24"
 
-        - If the caller wants a visible browser, always return ``False``.
-        - If an X display is already present (``$DISPLAY`` set — e.g. the
-          user is invoking us under ``xvfb-run`` or inside a real X session),
-          reuse it by returning ``False``. Camoufox's ``"virtual"`` mode
-          unconditionally spawns its own Xvfb via ``subprocess.Popen`` and
-          does not consult ``$DISPLAY``, so returning ``"virtual"`` here
-          would nest a second Xvfb inside the caller's — exactly the kind
-          of display-stack oddness that was flaky in issue #11.
-        - Otherwise on Linux, prefer Camoufox's built-in virtual display if
-          ``Xvfb`` is installed (stealthier than plain headless).
-        - Fall back to plain ``headless=True`` everywhere else.
+    def __init__(self):
+        self._xvfb_proc = None
+        self._xvfb_display = None
+        self._xvfb_prev_display = None
+
+    def _spawn_xvfb(self) -> Optional[str]:
+        """Spawn an Xvfb at a realistic size and return its ``:N`` display string.
+
+        Returns ``None`` on any failure so the caller can fall back to plain
+        headless. We pick a display number by probing ``/tmp/.X{n}-lock``.
+        """
+        import subprocess
+
+        xvfb = shutil.which("Xvfb")
+        if not xvfb:
+            return None
+
+        # Find a free display number. Avoid 0-9 which may be real displays.
+        chosen = None
+        for n in range(99, 200):
+            if not Path(f"/tmp/.X{n}-lock").exists():
+                chosen = n
+                break
+        if chosen is None:
+            log.debug("No free Xvfb display slots in :99-:199")
+            return None
+
+        display = f":{chosen}"
+        try:
+            self._xvfb_proc = subprocess.Popen(
+                [
+                    xvfb,
+                    display,
+                    "-screen", "0", self._XVFB_SCREEN,
+                    "-ac",
+                    "-nolisten", "tcp",
+                    "+extension", "RANDR",
+                    "+extension", "GLX",
+                    "+extension", "RENDER",
+                    "+extension", "COMPOSITE",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                start_new_session=True,
+            )
+        except Exception as e:
+            log.debug("Failed to spawn Xvfb: %s", e)
+            return None
+
+        # Give Xvfb a moment to create its lock file. If it dies immediately
+        # (e.g. missing libs), give up.
+        for _ in range(20):
+            if self._xvfb_proc.poll() is not None:
+                log.debug("Xvfb exited immediately, returncode=%s", self._xvfb_proc.returncode)
+                self._xvfb_proc = None
+                return None
+            if Path(f"/tmp/.X{chosen}-lock").exists():
+                break
+            time.sleep(0.1)
+
+        self._xvfb_display = display
+        log.info("Spawned Xvfb on %s (%s)", display, self._XVFB_SCREEN)
+        return display
+
+    def _resolve_display(self, headless: bool):
+        """Decide how to provide a display to Camoufox.
+
+        Returns a dict of extra kwargs to splice into the Camoufox constructor
+        AND has the side effect of exporting ``$DISPLAY`` when we spawn our
+        own Xvfb. The dict's ``headless`` key is authoritative.
         """
         if not headless:
-            return False
-        if sys.platform.startswith("linux"):
-            if _os.environ.get("DISPLAY"):
-                log.info("$DISPLAY is set — reusing existing X display instead of nesting Xvfb.")
-                return False
-            if shutil.which("Xvfb"):
-                return "virtual"
-            log.info("Xvfb not found — falling back to plain headless. Install xvfb for better Cloudflare bypass.")
-        return True
+            return {"headless": False}
+
+        if not sys.platform.startswith("linux"):
+            # macOS / Windows — plain headless is the only sensible option.
+            return {"headless": True}
+
+        if _os.environ.get("DISPLAY"):
+            log.info("$DISPLAY=%s is set — reusing it instead of spawning Xvfb.", _os.environ["DISPLAY"])
+            return {"headless": False}
+
+        # No display at all — try to spawn our own realistic-size Xvfb so we
+        # can launch Camoufox non-headless against it. This avoids Camoufox's
+        # 1×1 pixel virtual display (daijro/camoufox#458).
+        display = self._spawn_xvfb()
+        if display:
+            self._xvfb_prev_display = _os.environ.get("DISPLAY")
+            _os.environ["DISPLAY"] = display
+            return {"headless": False}
+
+        log.info(
+            "Could not start Xvfb (install it with `apt install xvfb` / `dnf install xorg-x11-server-Xvfb`)."
+            " Falling back to plain headless, which is more detectable."
+        )
+        return {"headless": True}
+
+    def _stop_xvfb(self) -> None:
+        """Restore $DISPLAY and stop any Xvfb we spawned."""
+        if self._xvfb_prev_display is None:
+            _os.environ.pop("DISPLAY", None)
+        else:
+            _os.environ["DISPLAY"] = self._xvfb_prev_display
+        self._xvfb_prev_display = None
+        self._xvfb_display = None
+        if self._xvfb_proc is not None:
+            try:
+                self._xvfb_proc.terminate()
+                try:
+                    self._xvfb_proc.wait(timeout=3)
+                except Exception:
+                    self._xvfb_proc.kill()
+            except Exception as e:
+                log.debug("Error stopping Xvfb: %s", e)
+            self._xvfb_proc = None
 
     def _build_kwargs(self, profile_dir: Path, headless: bool) -> dict:
         # NOTE: We intentionally do NOT pin ``locale`` or ``os`` here.
@@ -133,13 +238,14 @@ class _CamoufoxEngine:
         # otherwise randomized) produces internally inconsistent fingerprints
         # that Cloudflare's bot-score model readily flags. Letting Camoufox
         # auto-derive these from the IP gives a coherent profile.
-        return dict(
+        kwargs = dict(
             persistent_context=True,
             user_data_dir=str(profile_dir),
             humanize=True,
             geoip=True,
-            headless=self._resolve_headless(headless),
         )
+        kwargs.update(self._resolve_display(headless))
+        return kwargs
 
     def _cleanup_stale_locks(self, profile_dir: Path) -> None:
         """Remove Firefox profile lock files left behind by unclean exits.
@@ -164,39 +270,44 @@ class _CamoufoxEngine:
 
         profile_dir.mkdir(parents=True, exist_ok=True)
         self._cleanup_stale_locks(profile_dir)
-        kwargs = self._build_kwargs(profile_dir, headless)
 
         try:
-            cm = Camoufox(**kwargs)
-        except TypeError as e:
-            # Older Camoufox without persistent_context/geoip — degrade gracefully.
-            # The TypeError is raised at construction, not at __enter__.
-            log.warning(
-                "Camoufox is too old for persistent_context (%s); upgrade with: pip install -U 'camoufox>=0.4.11'",
-                e,
-            )
-            cm = Camoufox(headless=kwargs["headless"], humanize=True)
-            browser = cm.__enter__()
-            page = browser.new_page()
-            self._load_legacy_session(page.context, session_file)
-            return (page.context, page, None, cm)
+            kwargs = self._build_kwargs(profile_dir, headless)
 
-        try:
-            context = cm.__enter__()
-        except FileNotFoundError as e:
-            # Most common cause: geoip=True needs the MaxMind GeoLite2 DB,
-            # which is downloaded by ``python -m camoufox fetch`` — not by
-            # ``pip install``. Give the user an actionable message and retry
-            # once without geoip so the tool still works offline.
-            log.warning(
-                "Camoufox launch failed (%s). If this mentions a GeoLite DB, run: "
-                "python -m camoufox fetch   — retrying once without geoip.",
-                e,
-            )
-            retry_kwargs = dict(kwargs)
-            retry_kwargs.pop("geoip", None)
-            cm = Camoufox(**retry_kwargs)
-            context = cm.__enter__()
+            # Construct Camoufox. Older versions don't accept
+            # persistent_context/geoip and raise TypeError at construction.
+            try:
+                cm = Camoufox(**kwargs)
+            except TypeError as e:
+                log.warning(
+                    "Camoufox is too old for persistent_context (%s); "
+                    "upgrade with: pip install -U 'camoufox>=0.4.11'",
+                    e,
+                )
+                cm = Camoufox(headless=kwargs["headless"], humanize=True)
+                browser = cm.__enter__()
+                page = browser.new_page()
+                self._load_legacy_session(page.context, session_file)
+                return (page.context, page, None, cm)
+
+            try:
+                context = cm.__enter__()
+            except FileNotFoundError as e:
+                # geoip=True needs the MaxMind GeoLite2 DB, downloaded via
+                # ``python -m camoufox fetch`` — not by ``pip install``.
+                # Give an actionable message and retry once without geoip.
+                log.warning(
+                    "Camoufox launch failed (%s). If this mentions a GeoLite DB, run: "
+                    "python -m camoufox fetch   — retrying once without geoip.",
+                    e,
+                )
+                retry_kwargs = dict(kwargs)
+                retry_kwargs.pop("geoip", None)
+                cm = Camoufox(**retry_kwargs)
+                context = cm.__enter__()
+        except Exception:
+            self._stop_xvfb()
+            raise
 
         # With persistent_context=True, __enter__ returns a BrowserContext directly.
         try:
@@ -206,6 +317,7 @@ class _CamoufoxEngine:
                 cm.__exit__(None, None, None)
             except Exception:
                 pass
+            self._stop_xvfb()
             raise
 
         # Migration: if the persistent profile is fresh but a legacy session.json
@@ -277,22 +389,30 @@ class _CamoufoxEngine:
         log.info("Session saved: %d cookies to %s", len(garmin_cookies), session_file)
 
     def close(self, context, playwright, browser_ref):
-        """Close the Camoufox persistent context and shut down the browser.
+        """Close the Camoufox persistent context and any Xvfb we spawned.
 
         ``browser_ref`` holds the Camoufox context manager; calling ``__exit__``
-        properly tears down the browser process AND the virtual display (if any).
+        properly tears down the browser process. If we started our own Xvfb
+        in ``_resolve_display`` we stop it afterwards.
         """
-        if browser_ref is not None:
-            try:
-                browser_ref.__exit__(None, None, None)
-                return
-            except Exception:
-                pass
-        if context is not None:
-            try:
-                context.close()
-            except Exception:
-                pass
+        try:
+            if browser_ref is not None:
+                try:
+                    browser_ref.__exit__(None, None, None)
+                except Exception as e:
+                    log.debug("Camoufox __exit__ raised: %s", e)
+                    if context is not None:
+                        try:
+                            context.close()
+                        except Exception:
+                            pass
+            elif context is not None:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+        finally:
+            self._stop_xvfb()
 
 
 class GarminClient:
