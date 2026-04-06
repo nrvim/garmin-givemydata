@@ -141,13 +141,22 @@ class GarminClient:
         try:
             self._xvfb_proc = subprocess.Popen(
                 [
-                    xvfb, display,
-                    "-screen", "0", _XVFB_SCREEN,
-                    "-ac", "-nolisten", "tcp",
-                    "+extension", "RANDR",
-                    "+extension", "GLX",
-                    "+extension", "RENDER",
-                    "+extension", "COMPOSITE",
+                    xvfb,
+                    display,
+                    "-screen",
+                    "0",
+                    _XVFB_SCREEN,
+                    "-ac",
+                    "-nolisten",
+                    "tcp",
+                    "+extension",
+                    "RANDR",
+                    "+extension",
+                    "GLX",
+                    "+extension",
+                    "RENDER",
+                    "+extension",
+                    "COMPOSITE",
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -393,9 +402,7 @@ class GarminClient:
         except Exception:
             log.error("Login form not found on page: %s", self._driver.current_url)
             try:
-                body = self._driver.execute_script(
-                    "return document.body?.innerText?.substring(0, 500)"
-                )
+                body = self._driver.execute_script("return document.body?.innerText?.substring(0, 500)")
                 print(f"Login form not found. Current URL: {self._driver.current_url}")
                 print(f"Page content: {body}")
             except Exception:
@@ -571,9 +578,7 @@ class GarminClient:
         time.sleep(1)
         for sel in mfa_selectors:
             try:
-                mfa_input = WebDriverWait(self._driver, 3).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
-                )
+                mfa_input = WebDriverWait(self._driver, 3).until(EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
                 mfa_input.click()
                 mfa_input.clear()
                 mfa_input.send_keys(code)
@@ -682,7 +687,8 @@ class GarminClient:
         """
         self._ensure_on_garmin()
         csrf = self._ensure_csrf()
-        return self._driver.execute_async_script("""
+        return self._driver.execute_async_script(
+            """
             var callback = arguments[arguments.length - 1];
             var url = arguments[0];
             var csrf = arguments[1];
@@ -696,13 +702,17 @@ class GarminClient:
                     return await resp.json();
                 } catch(e) { return null; }
             })().then(callback).catch(function() { callback(null); });
-        """, api_path, csrf)
+        """,
+            api_path,
+            csrf,
+        )
 
     def download_file(self, api_path: str) -> Optional[bytes]:
         """Download a binary file from a /gc-api endpoint. Returns bytes or None."""
         self._ensure_on_garmin()
         csrf = self._ensure_csrf()
-        result = self._driver.execute_async_script("""
+        result = self._driver.execute_async_script(
+            """
             var callback = arguments[arguments.length - 1];
             var url = arguments[0];
             var csrf = arguments[1];
@@ -717,7 +727,10 @@ class GarminClient:
                     return {status: 200, data: Array.from(new Uint8Array(buffer))};
                 } catch(e) { return {status: 'error'}; }
             })().then(callback).catch(function() { callback({status: 'error'}); });
-        """, api_path, csrf)
+        """,
+            api_path,
+            csrf,
+        )
         if result and result.get("status") == 200 and result.get("data"):
             return bytes(result["data"])
         return None
@@ -732,7 +745,8 @@ class GarminClient:
         rest_entries = list(rest.items())
         gql_entries = list(gql.items())
 
-        result = self._driver.execute_async_script("""
+        result = self._driver.execute_async_script(
+            """
             var callback = arguments[arguments.length - 1];
             var csrf = arguments[0];
             var restEntries = arguments[1];
@@ -779,7 +793,11 @@ class GarminClient:
                 }
                 return output;
             })().then(callback).catch(function(e) { callback({error: String(e)}); });
-        """, csrf, rest_entries, gql_entries)
+        """,
+            csrf,
+            rest_entries,
+            gql_entries,
+        )
 
         if result and "error" in result:
             log.warning("_fetch_batch JS error: %s", result["error"])
