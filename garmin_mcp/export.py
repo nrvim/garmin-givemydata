@@ -406,10 +406,6 @@ def download_activity_files(
             print("  Login failed!")
             return
 
-        # First navigate to the Garmin app so we have the right context
-        client._page.goto("https://connect.garmin.com/modern/", wait_until="domcontentloaded")
-        time.sleep(2)
-
         downloaded = 0
         skipped = 0
         failed = 0
@@ -436,31 +432,12 @@ def download_activity_files(
                 skipped += 1
                 continue
 
-            url = url_pattern.format(id=aid)
-            result = client._page.evaluate(
-                f"""
-                async () => {{
-                    try {{
-                        const csrf = document.querySelector(
-                            'meta[name="csrf-token"], meta[name="_csrf"]'
-                        )?.content;
-                        const resp = await fetch('{url}', {{
-                            credentials: 'include',
-                            headers: {{'connect-csrf-token': csrf || ''}}
-                        }});
-                        if (resp.status !== 200) return {{status: resp.status}};
-                        const buffer = await resp.arrayBuffer();
-                        return {{status: 200, data: Array.from(new Uint8Array(buffer))}};
-                    }} catch(e) {{
-                        return {{status: 'error', msg: e.message}};
-                    }}
-                }}
-            """
-            )
+            api_path = url_pattern.format(id=aid)
+            file_data = client.download_file(api_path)
 
-            if result.get("status") == 200 and result.get("data"):
+            if file_data:
                 with open(filepath, "wb") as f:
-                    f.write(bytes(result["data"]))
+                    f.write(file_data)
                 downloaded += 1
             else:
                 failed += 1

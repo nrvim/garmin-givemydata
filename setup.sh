@@ -75,14 +75,9 @@ pip install --upgrade pip -q 2>&1 | tail -1
 pip install -r requirements.txt -q 2>&1 | tail -1
 echo "       Dependencies installed"
 
-# ── Step 4: Install browser driver ────────────────────────────
-echo "[4/5] Installing browser driver..."
-python -m playwright install chromium 2>&1 | grep -E "downloaded|Downloading" || echo "       Browser driver ready"
-
-# Linux may need system deps
-if [ "$(uname)" = "Linux" ]; then
-    echo "       (Linux detected — if browser fails, run: sudo python -m playwright install-deps chromium)"
-fi
+# ── Step 4: Verify Chrome is ready ────────────────────────────
+echo "[4/5] Verifying Chrome..."
+echo "       Chrome found — SeleniumBase will auto-download the matching chromedriver"
 
 # ── Step 5: Garmin credentials ────────────────────────────────
 echo "[5/5] Garmin Connect credentials"

@@ -73,7 +73,6 @@ def incremental_sync(target_date: str = None) -> dict:
         password=password,
         profile_dir=PROFILE_DIR,
         headless=True,
-        engine="auto",
         session_file=SESSION_FILE,
     )
 

@@ -271,12 +271,15 @@ garmin-givemydata --export-tcx ./tcx           # TCX (for TrainingPeaks)
 
 </details>
 
-### Browser engines
+### Browser engine
 
-| Engine | Flag | Headless | Cloudflare bypass |
-|--------|------|----------|-------------------|
-| **Camoufox** (default) | none | Yes | Yes |
-| **Chrome** | `--chrome --visible` | Needs `--visible` for first login | Only with visible window |
+Uses SeleniumBase UC mode (undetected Chrome) for Cloudflare bypass. Requires Google Chrome installed.
+
+| Engine | Headless | Cloudflare bypass | Session lifetime |
+|--------|----------|-------------------|-----------------|
+| **SeleniumBase UC** (Chrome) | Yes (via Xvfb on Linux) | Yes | Weeks on stable IP |
+
+**Note:** `cf_clearance` is bound to your IP address. If your IP changes, the session expires regardless of profile state. For unattended use, run on a machine with a stable egress IP.
 
 <details>
 <summary>Where data is stored</summary>
@@ -341,7 +344,7 @@ fit/                   # Original FIT files (lossless)
 ```
 garmin-givemydata/
 ├── garmin_givemydata.py       # Main entry: smart sync (full or incremental)
-├── garmin_client/              # Playwright-based Garmin Connect client
+├── garmin_client/              # SeleniumBase-based Garmin Connect client
 │   ├── client.py               #   GarminClient (login, fetch, export)
 │   └── endpoints.py            #   API endpoint definitions
 ├── garmin_mcp/                 # MCP server + database layer
@@ -374,9 +377,9 @@ SQLite ──→ MCP server (AI queries via 44 tools)
 | Platform | Status | Notes |
 |----------|--------|-------|
 | **macOS** | Tested | Primary development platform |
-| **Linux (Ubuntu/Debian/Fedora)** | Supported | May need `playwright install-deps` for system libraries |
+| **Linux (Ubuntu/Debian/Fedora)** | Supported | Needs Chrome + optional `xvfb` for headless SSH |
 | **Windows 10/11** | Supported | Use PowerShell or Command Prompt |
-| **WSL2** | Supported | Works headless with Camoufox |
+| **WSL2** | Supported | Works headless with Xvfb |
 
 <details>
 <summary>Manual setup (if setup script doesn't work)</summary>
@@ -390,7 +393,7 @@ cd garmin-givemydata
 python3.12 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python -m playwright install chromium   # only for --chrome fallback
+# Chrome must be installed (https://www.google.com/chrome/)
 cp .env.example .env
 ```
 </details>
@@ -404,8 +407,7 @@ cd garmin-givemydata
 python3.12 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python -m playwright install chromium
-sudo python -m playwright install-deps chromium
+# Chrome must be installed (https://www.google.com/chrome/)
 cp .env.example .env
 ```
 </details>
@@ -419,8 +421,7 @@ cd garmin-givemydata
 python3.12 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python -m playwright install chromium
-sudo python -m playwright install-deps chromium
+# Chrome must be installed (https://www.google.com/chrome/)
 cp .env.example .env
 ```
 </details>
@@ -435,7 +436,7 @@ cd garmin-givemydata
 python -m venv venv
 venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python -m playwright install chromium
+# Chrome must be installed (https://www.google.com/chrome/)
 copy .env.example .env
 ```
 
@@ -451,15 +452,15 @@ If PowerShell blocks the activate script: `Set-ExecutionPolicy -ExecutionPolicy 
 
 **"Login failed"**: Delete the browser profile and run again. For pip/brew: `rm -rf ~/.garmin-givemydata/browser_profile`. For git clone: `rm -rf browser_profile/`.
 
-**Script crashed / "Execution context was destroyed"**: If using `--chrome --visible`, don't close the Chrome window. Run again.
+**Script crashed**: Don't close the Chrome window manually. The tool handles shutdown — killing Chrome mid-run corrupts the profile. Run again (stale locks are auto-cleaned).
 
 **"Python not found"**: Make sure Python 3.10+ is on your PATH. macOS: `brew install python@3.12`. Ubuntu: `sudo apt install python3.12 python3.12-venv`.
 
-**403 or session errors**: Session expired. Delete the browser profile and re-login.
+**403 or session errors**: Session expired (often from IP change — `cf_clearance` is IP-bound). Delete the browser profile and re-login.
 
-**Chrome doesn't open (Linux)**: Use the default Camoufox engine (no display needed), or install Xvfb: `sudo apt install xvfb && xvfb-run python garmin_givemydata.py`.
+**Chrome doesn't open (Linux/SSH)**: Install Xvfb: `sudo apt install xvfb`. The tool auto-spawns Xvfb at 1920x1080 when no display is available, or use `xvfb-run -a garmin-givemydata`.
 
-**Playwright install fails (Linux)**: `sudo python -m playwright install-deps`
+**Session rot over SSH**: Run under `systemd-run --user --scope` or `tmux`/`screen` so SSH disconnect doesn't SIGHUP the process. The tool installs signal handlers but a detached session is more reliable.
 
 **MCP server "failed to connect"**: Paths in `.mcp.json` must be **absolute**. Test: `<path>/venv/bin/python <path>/run_mcp.py`
 

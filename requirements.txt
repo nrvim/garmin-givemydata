@@ -1,4 +1,3 @@
-playwright>=1.40
+seleniumbase>=4.30
 httpx>=0.25
 mcp[cli]>=1.0
-camoufox>=0.4

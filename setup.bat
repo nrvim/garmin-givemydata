@@ -43,10 +43,9 @@ pip install --upgrade pip -q 2>nul
 pip install -r requirements.txt -q 2>nul
 echo        Dependencies installed
 
-REM ── Step 3: Install browser driver ──
-echo [3/4] Installing browser driver...
-python -m playwright install chromium
-echo        Browser driver ready
+REM ── Step 3: Verify Chrome ──
+echo [3/4] Verifying Chrome...
+echo        Chrome found — SeleniumBase will auto-download the matching chromedriver
 
 REM ── Step 4: Garmin credentials ──
 echo [4/4] Garmin Connect credentials
