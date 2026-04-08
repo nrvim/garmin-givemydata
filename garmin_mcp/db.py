@@ -668,9 +668,33 @@ def init_db(conn: sqlite3.Connection) -> None:
     migrate_weight_table(conn)
     migrate_device_table(conn)
     migrate_training_status_table(conn)
-    cleanup_invalid_rows(conn)
-    backfill_hrv_timeline_counts(conn)
-    backfill_calories_from_daily_summaries(conn)
+
+    # Only run cleanup/backfill when there are rows that actually need it.
+    needs_cleanup = conn.execute(
+        "SELECT 1 FROM hrv WHERE calendar_date IS NULL OR TRIM(calendar_date) = '' LIMIT 1"
+    ).fetchone()
+    if needs_cleanup:
+        cleanup_invalid_rows(conn)
+
+    needs_hrv_backfill = conn.execute(
+        "SELECT 1 FROM hrv_timeline WHERE reading_count IS NULL OR reading_count = 0 LIMIT 1"
+    ).fetchone()
+    if needs_hrv_backfill:
+        backfill_hrv_timeline_counts(conn)
+
+    needs_cal_backfill = conn.execute(
+        """SELECT 1 FROM daily_summary ds
+           LEFT JOIN calories c ON c.calendar_date = ds.calendar_date
+           WHERE c.calendar_date IS NULL
+             AND (ds.total_kilocalories IS NOT NULL
+                  OR ds.active_kilocalories IS NOT NULL
+                  OR ds.bmr_kilocalories IS NOT NULL
+                  OR ds.remaining_kilocalories IS NOT NULL)
+           LIMIT 1"""
+    ).fetchone()
+    if needs_cal_backfill:
+        backfill_calories_from_daily_summaries(conn)
+
     conn.commit()
 
 
@@ -790,6 +814,8 @@ def upsert_lactate_threshold(conn: sqlite3.Connection, record: dict) -> None:
         (
             d,
             record.get("speed"),
+            # Garmin's lactate threshold endpoint actually sends "hearRate" (missing 't')
+            # in some firmware versions.  We check for both spellings.
             record.get("hearRate") or record.get("heartRate"),
             record.get("heartRateCycling"),
             record.get("rowSpeed"),

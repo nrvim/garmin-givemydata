@@ -18,7 +18,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
