@@ -28,6 +28,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from seleniumbase import Driver
 
 from .endpoints import (
+    activities_search_url,
     activity_detail_endpoints,
     daily_graphql,
     daily_rest,
@@ -934,9 +935,7 @@ class GarminClient:
         page_start = 100
         while True:
             act_result = self._fetch_batch(
-                {
-                    f"activities_page_{page_start}": f"/gc-api/activitylist-service/activities/search/activities?limit=100&start={page_start}&startDate={s_date}&endDate={e_date}"
-                },
+                {f"activities_page_{page_start}": activities_search_url(s_date, e_date, offset=page_start)},
                 {},
             )
             page_data = act_result.get(f"activities_page_{page_start}", {})
@@ -1034,9 +1033,7 @@ class GarminClient:
 
         if not activity_ids and on_batch:
             try:
-                act_data = self.api_fetch(
-                    f"/gc-api/activitylist-service/activities/search/activities?limit=1000&start=0&startDate={s_date}&endDate={e_date}"
-                )
+                act_data = self.api_fetch(activities_search_url(s_date, e_date, limit=1000))
                 if isinstance(act_data, list):
                     all_api_ids = [a.get("activityId") for a in act_data if a.get("activityId")]
                     activity_ids = [aid for aid in all_api_ids if aid not in (known_activity_ids or set())]

@@ -40,12 +40,17 @@ def profile_graphql(display_name: str) -> dict:
     }
 
 
+def activities_search_url(start_date: str, end_date: str, limit: int = 100, offset: int = 0) -> str:
+    """Build the activities search URL with date filtering."""
+    return f"/gc-api/activitylist-service/activities/search/activities?limit={limit}&start={offset}&startDate={start_date}&endDate={end_date}"
+
+
 def full_range_rest(display_name: str, start_date: str, end_date: str) -> dict:
     """REST endpoints that support full date ranges."""
     dn = display_name
     return {
         # Pagination is handled in client.py fetch_all().
-        "activities": f"/gc-api/activitylist-service/activities/search/activities?limit=100&start=0&startDate={start_date}&endDate={end_date}",
+        "activities": activities_search_url(start_date, end_date),
         "weight_range": f"/gc-api/weight-service/weight/dateRange?startDate={start_date}&endDate={end_date}",
         "weight_latest": f"/gc-api/weight-service/weight/latest?date={end_date}",
         "vo2max_trend": f"/gc-api/metrics-service/metrics/maxmet/daily/{start_date}/{end_date}",
