@@ -44,9 +44,8 @@ def full_range_rest(display_name: str, start_date: str, end_date: str) -> dict:
     """REST endpoints that support full date ranges."""
     dn = display_name
     return {
-        # Note: this returns max ~20-100 activities per page. Pagination
-        # is handled in client.py fetch_all() to get ALL activities.
-        "activities": "/gc-api/activitylist-service/activities/search/activities?limit=100&start=0",
+        # Pagination is handled in client.py fetch_all().
+        "activities": f"/gc-api/activitylist-service/activities/search/activities?limit=100&start=0&startDate={start_date}&endDate={end_date}",
         "weight_range": f"/gc-api/weight-service/weight/dateRange?startDate={start_date}&endDate={end_date}",
         "weight_latest": f"/gc-api/weight-service/weight/latest?date={end_date}",
         "vo2max_trend": f"/gc-api/metrics-service/metrics/maxmet/daily/{start_date}/{end_date}",

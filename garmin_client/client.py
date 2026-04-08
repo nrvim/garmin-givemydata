@@ -930,12 +930,12 @@ class GarminClient:
         full = self._fetch_batch(full_rest, full_gql)
         _process_batch(full)
 
-        # 2b. Paginate through ALL activities
+        # 2b. Paginate remaining activities within the date range
         page_start = 100
         while True:
             act_result = self._fetch_batch(
                 {
-                    f"activities_page_{page_start}": f"/gc-api/activitylist-service/activities/search/activities?limit=100&start={page_start}"
+                    f"activities_page_{page_start}": f"/gc-api/activitylist-service/activities/search/activities?limit=100&start={page_start}&startDate={s_date}&endDate={e_date}"
                 },
                 {},
             )
@@ -1035,7 +1035,7 @@ class GarminClient:
         if not activity_ids and on_batch:
             try:
                 act_data = self.api_fetch(
-                    "/gc-api/activitylist-service/activities/search/activities?limit=1000&start=0"
+                    f"/gc-api/activitylist-service/activities/search/activities?limit=1000&start=0&startDate={s_date}&endDate={e_date}"
                 )
                 if isinstance(act_data, list):
                     all_api_ids = [a.get("activityId") for a in act_data if a.get("activityId")]
