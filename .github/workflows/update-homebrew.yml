@@ -66,8 +66,8 @@ jobs:
 
             def caveats
               <<~EOS
-                To complete setup, install the browser driver:
-                  playwright install chromium
+                Google Chrome is required for authentication.
+                Install from: https://www.google.com/chrome/
 
                 Then run:
                   garmin-givemydata

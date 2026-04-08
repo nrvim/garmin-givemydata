@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "garmin-givemydata"
-version = "0.1.8"
+version = "0.1.9"
 description = "Get your Garmin Connect data back. Browser-based extraction + 47-table SQLite database + MCP server for AI analysis."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,14 +27,11 @@ classifiers = [
     "Topic :: Database",
 ]
 dependencies = [
-    "playwright>=1.40",
+    "seleniumbase>=4.30",
     "httpx>=0.25",
     "mcp[cli]>=1.0",
     "python-dotenv>=1.0",
 ]
-
-[project.optional-dependencies]
-camoufox = ["camoufox>=0.4"]
 
 [project.urls]
 Homepage = "https://github.com/nrvim/garmin-givemydata"

@@ -282,11 +282,6 @@ examples:
         action="store_true",
         help="Show the browser window (default: headless). Useful for debugging login issues.",
     )
-    parser.add_argument(
-        "--chrome",
-        action="store_true",
-        help="Use Chrome instead of Camoufox (default: auto-detect best engine).",
-    )
 
     args = parser.parse_args()
 
@@ -432,7 +427,6 @@ examples:
             password=password,
             profile_dir=PROFILE_DIR,
             headless=not args.visible,
-            engine="chrome" if args.chrome else "auto",
             session_file=SESSION_FILE,
         )
         try:
@@ -442,20 +436,11 @@ examples:
 
             # Get activity list from API
             print("Fetching activity list...")
-            client._page.goto("https://connect.garmin.com/modern/", wait_until="domcontentloaded")
-            time.sleep(2)
-
-            act_result = client._page.evaluate("""
-                async () => {
-                    const csrf = document.querySelector('meta[name="csrf-token"], meta[name="_csrf"]')?.content;
-                    const resp = await fetch('/gc-api/activitylist-service/activities/search/activities?limit=1000&start=0', {
-                        credentials: 'include',
-                        headers: {'connect-csrf-token': csrf || '', 'Accept': 'application/json'}
-                    });
-                    if (resp.status !== 200) return [];
-                    return await resp.json();
-                }
-            """)
+            act_result = client.api_fetch(
+                "/gc-api/activitylist-service/activities/search/activities?limit=1000&start=0"
+            )
+            if not act_result:
+                act_result = []
 
             if not act_result:
                 print("No activities found.")
@@ -497,31 +482,12 @@ examples:
                     print(f"  {filename} (already exists)")
                     continue
 
-                url = f"/gc-api/download-service/files/activity/{aid}"
-                result = client._page.evaluate(
-                    f"""
-                    async () => {{
-                        try {{
-                            const csrf = document.querySelector(
-                                'meta[name="csrf-token"], meta[name="_csrf"]'
-                            )?.content;
-                            const resp = await fetch('{url}', {{
-                                credentials: 'include',
-                                headers: {{'connect-csrf-token': csrf || ''}}
-                            }});
-                            if (resp.status !== 200) return {{status: resp.status}};
-                            const buffer = await resp.arrayBuffer();
-                            return {{status: 200, data: Array.from(new Uint8Array(buffer))}};
-                        }} catch(e) {{
-                            return {{status: 'error'}};
-                        }}
-                    }}
-                """
-                )
+                api_path = f"/gc-api/download-service/files/activity/{aid}"
+                data = client.download_file(api_path)
 
-                if result.get("status") == 200 and result.get("data"):
+                if data:
                     with open(filepath, "wb") as f:
-                        f.write(bytes(result["data"]))
+                        f.write(data)
                     downloaded += 1
                     print(f"  {filename}")
 
@@ -545,7 +511,6 @@ examples:
         password=password,
         profile_dir=PROFILE_DIR,
         headless=not args.visible,
-        engine="chrome" if args.chrome else "auto",
         session_file=SESSION_FILE,
     )
 
@@ -596,12 +561,6 @@ examples:
                     f"\nDownloading FIT files ({len(new_activities)} new, {len(existing_fits)} already downloaded)..."
                 )
 
-                client._page.goto(
-                    "https://connect.garmin.com/modern/",
-                    wait_until="domcontentloaded",
-                )
-                time.sleep(2)
-
                 downloaded = 0
                 for i, (aid, name, date_str) in enumerate(new_activities):
                     safe_name = ""
@@ -613,31 +572,12 @@ examples:
                     filename = f"{safe_date}_{aid}{safe_name}.zip"
                     filepath = fit_dir / filename
 
-                    url = f"/gc-api/download-service/files/activity/{aid}"
-                    result = client._page.evaluate(
-                        f"""
-                        async () => {{
-                            try {{
-                                const csrf = document.querySelector(
-                                    'meta[name="csrf-token"], meta[name="_csrf"]'
-                                )?.content;
-                                const resp = await fetch('{url}', {{
-                                    credentials: 'include',
-                                    headers: {{'connect-csrf-token': csrf || ''}}
-                                }});
-                                if (resp.status !== 200) return {{status: resp.status}};
-                                const buffer = await resp.arrayBuffer();
-                                return {{status: 200, data: Array.from(new Uint8Array(buffer))}};
-                            }} catch(e) {{
-                                return {{status: 'error'}};
-                            }}
-                        }}
-                    """
-                    )
+                    api_path = f"/gc-api/download-service/files/activity/{aid}"
+                    data = client.download_file(api_path)
 
-                    if result.get("status") == 200 and result.get("data"):
+                    if data:
                         with open(filepath, "wb") as f:
-                            f.write(bytes(result["data"]))
+                            f.write(data)
                         downloaded += 1
 
                     if downloaded > 0 and downloaded % 10 == 0:

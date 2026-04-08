@@ -1,16 +1,31 @@
 """
-Garmin Connect Client using Playwright for authentication and data fetching.
+Garmin Connect Client using SeleniumBase (UC mode) for authentication and data fetching.
+
+Uses undetected-chromedriver via SeleniumBase to bypass Cloudflare bot detection
+on Garmin Connect.  All API calls go through the browser context via
+``execute_async_script`` so the TLS fingerprint, cookies, and CSRF tokens are
+always consistent — the only pattern confirmed working as of April 2026
+(see matin/garth#225).
 """
 
+import atexit
 import json
 import logging
+import os as _os
+import shutil
+import signal
 import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from playwright.sync_api import BrowserContext, Page, sync_playwright
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from seleniumbase import Driver
 
 from .endpoints import (
     activity_detail_endpoints,
@@ -34,127 +49,48 @@ SSO_LOGIN_URL = (
     "&service=https%3A%2F%2Fconnect.garmin.com%2Fapp"
 )
 
-
-class _ChromeEngine:
-    """Browser engine using Playwright + system Chrome."""
-
-    def launch(self, profile_dir: Path, headless: bool, session_file: Path = None):
-        """Launch Chrome. Returns (context, page, playwright_instance, None)."""
-        pw = sync_playwright().start()
-
-        cookies_file = profile_dir / "Default" / "Cookies"
-        has_valid_session = cookies_file.exists() and cookies_file.stat().st_size > 1024
-        use_headless = headless and has_valid_session
-
-        if headless and not has_valid_session:
-            print("First login requires a visible browser (Cloudflare verification).")
-            print("Subsequent runs will be headless automatically.\n")
-
-        args = [
-            "--disable-blink-features=AutomationControlled",
-        ]
-        if use_headless:
-            args.append("--headless=new")
-
-        context = pw.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            headless=False,
-            channel="chrome",
-            args=args,
-            ignore_default_args=["--enable-automation"],
-            locale="en-US",
-            timezone_id="America/New_York",
-        )
-
-        page = context.pages[0] if context.pages else context.new_page()
-        page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-
-        return (context, page, pw, None)
-
-    def has_valid_session(self, profile_dir: Path, session_file: Path) -> bool:
-        """Check Chrome cookie file exists and is >1024 bytes."""
-        cookies_file = profile_dir / "Default" / "Cookies"
-        return cookies_file.exists() and cookies_file.stat().st_size > 1024
-
-    def save_session(self, page, session_file: Path):
-        """No-op for Chrome -- persists via browser profile automatically."""
-
-    def close(self, context, playwright, browser_ref):
-        """Close Chrome context and Playwright."""
-        if context:
-            context.close()
-        if playwright:
-            playwright.stop()
+CSRF_TTL = 1800  # 30 minutes — re-read meta tag after this
+_XVFB_SCREEN = "1920x1080x24"
+_SENTINEL = ".garmin_clean_exit"
 
 
-class _CamoufoxEngine:
-    """Browser engine using Camoufox (custom Firefox) -- bypasses Cloudflare headless."""
+# ─── Process lifecycle ───────────────────────────────────────────
 
-    def launch(self, profile_dir: Path, headless: bool, session_file: Path = None):
-        """Launch Camoufox. Returns (context, page, None, browser)."""
-        from camoufox.sync_api import Camoufox
 
-        browser = Camoufox(headless=headless).__enter__()
-        try:
-            page = browser.new_page()
-        except Exception:
-            browser.close()
-            raise
-        context = page.context
+class _ProcessLifecycle:
+    """Ensures clean browser shutdown on SIGHUP, SIGTERM, SIGINT, and atexit.
 
-        # Load saved session cookies if available
-        if session_file and session_file.exists():
-            try:
-                session = json.loads(session_file.read_text())
-                saved_at = session.get("saved_at", 0)
-                age_days = (time.time() - saved_at) / 86400
-                if age_days < 364 and session.get("cookies"):
-                    context.add_cookies(session["cookies"])
-                    log.info(
-                        "Loaded %d cookies from session (%.0f days old)",
-                        len(session["cookies"]),
-                        age_days,
-                    )
-            except Exception as e:
-                log.debug("Could not load session: %s", e)
+    SSH disconnects send SIGHUP to the child process.  Without this handler
+    Chrome dies mid-IndexedDB-write and the profile state is torn — exactly
+    the failure mode that causes issue #11's session rot.
+    """
 
-        return (context, page, None, browser)
+    def __init__(self, cleanup_fn):
+        self._cleanup = cleanup_fn
+        self._cleaned = False
 
-    def has_valid_session(self, profile_dir: Path, session_file: Path) -> bool:
-        """Check if session JSON file exists with valid cookies."""
-        if not session_file or not session_file.exists():
-            return False
-        try:
-            session = json.loads(session_file.read_text())
-            age_days = (time.time() - session.get("saved_at", 0)) / 86400
-            has_cookies = bool(session.get("cookies"))
-            return has_cookies and age_days < 364
-        except Exception:
-            return False
+    def install(self):
+        atexit.register(self._on_exit)
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, self._on_signal)
+        if hasattr(signal, "SIGHUP"):
+            signal.signal(signal.SIGHUP, self._on_signal)
 
-    def save_session(self, page, session_file: Path):
-        """Save cookies to JSON file."""
-        import os
+    def _on_signal(self, signum, frame):
+        self._on_exit()
+        sys.exit(128 + signum)
 
-        if not session_file:
+    def _on_exit(self):
+        if self._cleaned:
             return
-        cookies = page.context.cookies()
-        garmin_cookies = [c for c in cookies if "garmin" in c.get("domain", "") or "cloudflare" in c.get("domain", "")]
-        if not garmin_cookies:
-            return
-        session = {"cookies": garmin_cookies, "saved_at": time.time()}
-        fd = os.open(str(session_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(session, f, indent=2)
-        log.info("Session saved: %d cookies to %s", len(garmin_cookies), session_file)
+        self._cleaned = True
+        try:
+            self._cleanup()
+        except Exception:
+            pass
 
-    def close(self, context, playwright, browser_ref):
-        """Close Camoufox browser."""
-        if browser_ref:
-            try:
-                browser_ref.close()
-            except Exception:
-                pass
+
+# ─── Garmin Client ───────────────────────────────────────────────
 
 
 class GarminClient:
@@ -164,8 +100,8 @@ class GarminClient:
         password: str,
         profile_dir: Optional[Path] = None,
         headless: bool = False,
-        engine: str = "auto",
         session_file: Optional[Path] = None,
+        **_kwargs,  # absorb legacy engine= kwarg
     ):
         self.email = email
         self.password = password
@@ -173,171 +109,386 @@ class GarminClient:
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self.headless = headless
         self.session_file = session_file
-        self._playwright = None
-        self._browser_ref = None  # Camoufox browser reference
-        self._context: Optional[BrowserContext] = None
-        self._page: Optional[Page] = None
+        self._driver = None
         self._csrf: Optional[str] = None
+        self._csrf_time: float = 0
         self._display_name: Optional[str] = None
+        self._lifecycle: Optional[_ProcessLifecycle] = None
+        self._xvfb_proc = None
+        self._xvfb_display = None
+        self._xvfb_prev_display = None
 
-        # Select engine
-        if engine == "chrome":
-            self._engine = _ChromeEngine()
-        elif engine == "camoufox":
-            self._engine = _CamoufoxEngine()
-        else:  # auto
+    # ── Display management ───────────────────────────────────────
+
+    def _spawn_xvfb(self) -> Optional[str]:
+        """Spawn Xvfb at a realistic size and return its ``:N`` display string."""
+        import subprocess
+
+        xvfb = shutil.which("Xvfb")
+        if not xvfb:
+            return None
+
+        chosen = None
+        for n in range(99, 200):
+            if not Path(f"/tmp/.X{n}-lock").exists():
+                chosen = n
+                break
+        if chosen is None:
+            log.debug("No free Xvfb display slots in :99-:199")
+            return None
+
+        display = f":{chosen}"
+        try:
+            self._xvfb_proc = subprocess.Popen(
+                [
+                    xvfb,
+                    display,
+                    "-screen",
+                    "0",
+                    _XVFB_SCREEN,
+                    "-ac",
+                    "-nolisten",
+                    "tcp",
+                    "+extension",
+                    "RANDR",
+                    "+extension",
+                    "GLX",
+                    "+extension",
+                    "RENDER",
+                    "+extension",
+                    "COMPOSITE",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                start_new_session=True,
+            )
+        except Exception as e:
+            log.debug("Failed to spawn Xvfb: %s", e)
+            return None
+
+        for _ in range(20):
+            if self._xvfb_proc.poll() is not None:
+                log.debug("Xvfb exited immediately, rc=%s", self._xvfb_proc.returncode)
+                self._xvfb_proc = None
+                return None
+            if Path(f"/tmp/.X{chosen}-lock").exists():
+                break
+            time.sleep(0.1)
+
+        self._xvfb_display = display
+        log.info("Spawned Xvfb on %s (%s)", display, _XVFB_SCREEN)
+        return display
+
+    def _stop_xvfb(self) -> None:
+        """Restore $DISPLAY and stop any Xvfb we spawned."""
+        if self._xvfb_prev_display is None:
+            _os.environ.pop("DISPLAY", None)
+        else:
+            _os.environ["DISPLAY"] = self._xvfb_prev_display
+        self._xvfb_prev_display = None
+        self._xvfb_display = None
+        if self._xvfb_proc is not None:
             try:
-                from camoufox.sync_api import Camoufox  # noqa: F401
+                self._xvfb_proc.terminate()
+                try:
+                    self._xvfb_proc.wait(timeout=3)
+                except Exception:
+                    self._xvfb_proc.kill()
+            except Exception as e:
+                log.debug("Error stopping Xvfb: %s", e)
+            self._xvfb_proc = None
 
-                self._engine = _CamoufoxEngine()
-            except ImportError:
-                self._engine = _ChromeEngine()
+    # ── Profile management ───────────────────────────────────────
 
-        engine_name = "Camoufox" if isinstance(self._engine, _CamoufoxEngine) else "Chrome"
-        log.info("Browser engine: %s", engine_name)
+    def _cleanup_stale_locks(self) -> None:
+        """Remove Chrome profile lock files left behind by unclean exits."""
+        for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+            p = self.profile_dir / name
+            try:
+                if p.exists() or p.is_symlink():
+                    p.unlink()
+                    log.debug("Removed stale Chrome lock: %s", p)
+            except Exception as e:
+                log.debug("Could not remove lock %s: %s", p, e)
+
+    def _write_sentinel(self) -> None:
+        """Write a clean-exit sentinel after successful browser shutdown."""
+        try:
+            (self.profile_dir / _SENTINEL).write_text(str(time.time()))
+        except Exception:
+            pass
+
+    def _check_sentinel(self) -> bool:
+        """Check if last exit was clean. Returns True if clean, False if dirty."""
+        sentinel = self.profile_dir / _SENTINEL
+        if sentinel.exists():
+            try:
+                sentinel.unlink()
+            except Exception:
+                pass
+            return True
+        return False
+
+    def _load_legacy_session(self) -> None:
+        """Import cookies from legacy session.json if profile is fresh."""
+        if not self.session_file or not self.session_file.exists():
+            return
+        default_dir = self.profile_dir / "Default"
+        if default_dir.exists() and any(default_dir.iterdir()):
+            return
+        try:
+            session = json.loads(self.session_file.read_text())
+            age_days = (time.time() - session.get("saved_at", 0)) / 86400
+            if age_days >= 364 or not session.get("cookies"):
+                return
+            self._driver.get("https://connect.garmin.com")
+            time.sleep(1)
+            count = 0
+            for cookie in session["cookies"]:
+                if "expires" in cookie:
+                    cookie["expiry"] = int(cookie.pop("expires"))
+                cookie.pop("size", None)
+                try:
+                    self._driver.add_cookie(cookie)
+                    count += 1
+                except Exception:
+                    pass
+            log.info("Migrated %d legacy cookies from session.json", count)
+        except Exception as e:
+            log.debug("Legacy session migration failed: %s", e)
+
+    def _save_session(self) -> None:
+        """Export Garmin cookies to JSON as a portable backup."""
+        if not self.session_file:
+            return
+        try:
+            cookies = self._driver.get_cookies()
+        except Exception:
+            return
+        garmin_cookies = [c for c in cookies if "garmin" in c.get("domain", "")]
+        if not garmin_cookies:
+            return
+        session = {"cookies": garmin_cookies, "saved_at": time.time()}
+        fd = _os.open(str(self.session_file), _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
+        with _os.fdopen(fd, "w") as f:
+            json.dump(session, f, indent=2)
+        log.info("Session saved: %d cookies to %s", len(garmin_cookies), self.session_file)
+
+    # ── Browser launch ───────────────────────────────────────────
+
+    def _launch_browser(self) -> None:
+        """Launch SeleniumBase UC Chrome with appropriate display settings."""
+        self._cleanup_stale_locks()
+
+        use_headless2 = False
+
+        if self.headless:
+            if sys.platform.startswith("linux") and not _os.environ.get("DISPLAY"):
+                # No display (SSH/server) — spawn Xvfb and run headed against it
+                # for better stealth than Chrome's headless mode.
+                display = self._spawn_xvfb()
+                if display:
+                    self._xvfb_prev_display = _os.environ.get("DISPLAY")
+                    _os.environ["DISPLAY"] = display
+                else:
+                    log.warning(
+                        "No display and Xvfb not found (apt install xvfb). "
+                        "Falling back to headless mode (more detectable)."
+                    )
+                    use_headless2 = True
+            else:
+                # Desktop or macOS/Windows — use Chrome's new headless mode
+                use_headless2 = True
+
+        driver_kwargs = dict(
+            uc=True,
+            user_data_dir=str(self.profile_dir),
+            locale_code="en-US",
+        )
+        if use_headless2:
+            driver_kwargs["headless2"] = True
+
+        try:
+            self._driver = Driver(**driver_kwargs)
+        except Exception:
+            self._stop_xvfb()
+            raise
+
+        self._driver.set_script_timeout(120)
+
+        last_exit_clean = self._check_sentinel()
+        if not last_exit_clean:
+            log.info("Previous exit was unclean — profile may need warm-up")
+
+        self._load_legacy_session()
+
+        self._lifecycle = _ProcessLifecycle(self.close)
+        self._lifecycle.install()
+
+        log.info("Browser engine: SeleniumBase UC (Chrome)")
+
+    # ── Browser helpers ──────────────────────────────────────────
+
+    def _uc_navigate(self, url: str, reconnect_time: int = 10) -> None:
+        """Navigate to a URL with Cloudflare bypass (disconnects CDP briefly)."""
+        self._driver.uc_open_with_reconnect(url, reconnect_time)
+        try:
+            WebDriverWait(self._driver, 15).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+        except Exception:
+            pass
+
+    def _type_slowly(self, text: str, delay_s: float = 0.03) -> None:
+        """Type text with delays between keystrokes for stealth."""
+        actions = ActionChains(self._driver)
+        for char in text:
+            actions.send_keys(char)
+            actions.pause(delay_s)
+        actions.perform()
+
+    # ── Login flow ───────────────────────────────────────────────
 
     def login(self, timeout_ms: int = 600000) -> bool:
-        result = self._engine.launch(self.profile_dir, self.headless, self.session_file)
-        self._context, self._page, self._playwright, self._browser_ref = result
+        self._launch_browser()
 
         log.debug("Navigating to connect.garmin.com/modern/")
         try:
-            self._page.goto(
-                "https://connect.garmin.com/modern/",
-                wait_until="domcontentloaded",
-            )
+            self._uc_navigate("https://connect.garmin.com/modern/", 12)
         except Exception as e:
             log.debug("Initial navigation error (expected for fresh profile): %s", e)
         time.sleep(3)
 
-        log.debug("URL after initial navigation: %s", self._page.url)
+        log.debug("URL after initial navigation: %s", self._driver.current_url)
 
         if not self._is_on_login_page():
-            # Verify we actually have a valid session by trying to extract CSRF
             setup_ok = self._post_login_setup()
             if setup_ok:
                 print("Already logged in (session restored)")
-                self._engine.save_session(self._page, self.session_file)
+                self._save_session()
                 return True
-            # CSRF failed — page looks like app but session is invalid
-            # Navigate back to SSO for fresh login
             log.debug("On app page but no CSRF — session invalid, proceeding with login")
             try:
-                self._page.goto(SSO_LOGIN_URL, wait_until="domcontentloaded")
+                self._uc_navigate(SSO_LOGIN_URL, 12)
                 time.sleep(3)
             except Exception:
                 pass
 
         print("Logging in...")
 
-        # Clear stale SSO/Garmin cookies to prevent login loops
         try:
-            self._context.clear_cookies()
+            self._driver.delete_all_cookies()
             log.debug("Cleared stale cookies")
         except Exception as e:
             log.debug("Cookie clear error: %s", e)
 
-        # Navigate to SSO — may need retries on fresh profiles
         for attempt in range(3):
             try:
-                self._page.goto(SSO_LOGIN_URL, wait_until="domcontentloaded")
+                self._uc_navigate(SSO_LOGIN_URL, 12)
                 break
             except Exception as e:
                 log.debug("SSO navigation attempt %d error: %s", attempt + 1, e)
                 time.sleep(3)
 
         time.sleep(2)
-        log.debug("SSO page URL: %s", self._page.url)
+        log.debug("SSO page URL: %s", self._driver.current_url)
 
-        # Wait for login form to be ready
+        # Wait for login form
         try:
-            email_input = self._page.locator('input[name="email"]').first
-            email_input.wait_for(timeout=15000)
+            email_input = WebDriverWait(self._driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'input[name="email"]'))
+            )
         except Exception:
-            log.error("Login form not found on page: %s", self._page.url)
-            # Dump page content for debugging
+            log.error("Login form not found on page: %s", self._driver.current_url)
             try:
-                body = self._page.evaluate("() => document.body?.innerText?.substring(0, 500)")
-                print(f"Login form not found. Current URL: {self._page.url}")
+                body = self._driver.execute_script("return document.body?.innerText?.substring(0, 500)")
+                print(f"Login form not found. Current URL: {self._driver.current_url}")
                 print(f"Page content: {body}")
             except Exception:
-                print(f"Login form not found. Current URL: {self._page.url}")
+                print(f"Login form not found. Current URL: {self._driver.current_url}")
             print("Try running with --visible or deleting browser_profile/")
             return False
 
         email_input.click()
-        self._page.keyboard.type(self.email, delay=30)
+        self._type_slowly(self.email, delay_s=0.03)
 
-        pwd_input = self._page.locator('input[name="password"]').first
-        pwd_input.wait_for(timeout=5000)
-        pwd_input.click()
-        self._page.keyboard.type(self.password, delay=30)
-
-        # Auto-check "Remember Me" on login page
         try:
-            self._page.evaluate("""
-                () => {
-                    const cb = document.querySelector('input[name="remember"], input[id="remember"]');
-                    if (cb && !cb.checked) cb.click();
-                }
+            pwd_input = WebDriverWait(self._driver, 5).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'input[name="password"]'))
+            )
+        except Exception:
+            log.error("Password field not found")
+            return False
+
+        pwd_input.click()
+        self._type_slowly(self.password, delay_s=0.03)
+
+        # Auto-check "Remember Me"
+        try:
+            self._driver.execute_script("""
+                var cb = document.querySelector('input[name="remember"], input[id="remember"]');
+                if (cb && !cb.checked) cb.click();
             """)
         except Exception:
             pass
 
-        submit = self._page.locator('button[type="submit"], button:has-text("Sign In")').first
-        submit.click()
+        try:
+            submit = self._driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]')
+            submit.click()
+        except Exception:
+            ActionChains(self._driver).send_keys(Keys.ENTER).perform()
+
         print("Credentials submitted, waiting for Garmin...")
 
-        # Poll until we leave SSO — handles both MFA and direct login
-        # The user can enter MFA in the browser OR via console (if interactive)
+        # Poll until we leave SSO
         max_polls = timeout_ms // 1000
         mfa_prompted = False
         mfa_code_thread = None
-        mfa_code_result = [None]  # mutable container for thread result
+        mfa_code_result = [None]
 
         for poll in range(max_polls):
             time.sleep(1)
-            url = self._page.url
+            try:
+                url = self._driver.current_url
+            except Exception:
+                continue
 
-            # Log URL periodically
             if poll % 5 == 0:
                 log.debug("Poll %d: URL = %s", poll, url)
 
-            # Success: we left SSO entirely
+            # Success: we left SSO
             if "connect.garmin.com" in url and "sso.garmin.com" not in url:
                 log.info("Login redirect detected: %s", url)
                 break
 
-            # Check if a NEW page/tab opened with the app (Garmin sometimes
-            # opens the app in a new tab after MFA)
-            for p in self._context.pages:
-                p_url = p.url
-                if "connect.garmin.com" in p_url and "sso.garmin.com" not in p_url:
-                    log.info("Found app in another tab: %s", p_url)
-                    self._page = p
-                    url = p_url
-                    break
+            # Check other tabs (Garmin sometimes opens app in a new tab after MFA)
+            handles = self._driver.window_handles
+            if len(handles) > 1:
+                original = self._driver.current_window_handle
+                for handle in handles:
+                    self._driver.switch_to.window(handle)
+                    p_url = self._driver.current_url
+                    if "connect.garmin.com" in p_url and "sso.garmin.com" not in p_url:
+                        log.info("Found app in another tab: %s", p_url)
+                        url = p_url
+                        break
+                else:
+                    self._driver.switch_to.window(original)
             if "connect.garmin.com" in url and "sso.garmin.com" not in url:
                 break
 
-            # After MFA prompted: only do lightweight URL checks, don't
-            # navigate or run JS that could disrupt the MFA page.
-            # The user will complete MFA in the browser — Garmin will
-            # redirect to connect.garmin.com automatically.
-
-            # MFA page detected — check URL AND check for MFA input fields on the page
+            # MFA detection
             is_mfa_page = "/mfa" in url.lower() or "verifymfa" in url.lower()
             if not is_mfa_page and not mfa_prompted and "sso.garmin.com" in url:
                 try:
-                    has_mfa_input = self._page.evaluate("""
-                        () => {
-                            const inputs = document.querySelectorAll(
-                                'input[name="verificationCode"], input[name="securityCode"], input[type="tel"], '
-                                + 'input[placeholder*="code"], input[placeholder*="Code"], '
-                                + 'input[name="mfaCode"], input[autocomplete="one-time-code"]'
-                            );
-                            return inputs.length > 0;
-                        }
+                    has_mfa_input = self._driver.execute_script("""
+                        var inputs = document.querySelectorAll(
+                            'input[name="verificationCode"], input[name="securityCode"], input[type="tel"], '
+                            + 'input[placeholder*="code"], input[placeholder*="Code"], '
+                            + 'input[name="mfaCode"], input[autocomplete="one-time-code"]'
+                        );
+                        return inputs.length > 0;
                     """)
                     if has_mfa_input:
                         is_mfa_page = True
@@ -349,13 +500,12 @@ class GarminClient:
                 mfa_prompted = True
                 log.info("MFA page detected: %s", url)
 
-                # Auto-check "Remember this browser" if available
                 try:
-                    self._page.evaluate("""
-                        () => {
-                            const cb = document.querySelector('input[name="remember"], input[id="remember"], input[type="checkbox"]');
-                            if (cb && !cb.checked) cb.click();
-                        }
+                    self._driver.execute_script("""
+                        var cb = document.querySelector(
+                            'input[name="remember"], input[id="remember"], input[type="checkbox"]'
+                        );
+                        if (cb && !cb.checked) cb.click();
                     """)
                 except Exception:
                     pass
@@ -378,50 +528,42 @@ class GarminClient:
                     print()
                     print("  MFA required — enter code in the browser window...")
 
-            # Show waiting status for MFA
             if mfa_prompted and poll % 15 == 0 and poll > 0:
                 print("  Still waiting for MFA code...")
 
-            # If we've been stuck on SSO for 30+ seconds after MFA was prompted,
-            # try navigating to the app directly — the session might be valid
             if mfa_prompted and poll > 0 and poll % 30 == 0:
                 log.debug("Stuck on SSO after MFA — trying to navigate to app...")
                 try:
-                    self._page.goto(
-                        "https://connect.garmin.com/modern/",
-                        wait_until="domcontentloaded",
-                        timeout=10000,
-                    )
+                    self._driver.get("https://connect.garmin.com/modern/")
                     time.sleep(2)
-                    url = self._page.url
+                    url = self._driver.current_url
                     if "connect.garmin.com" in url and "sso.garmin.com" not in url:
                         log.info("Navigated to app after MFA: %s", url)
                         break
                 except Exception as e:
                     log.debug("Nav attempt error: %s", e)
 
-            # If console MFA code was entered, type it into the browser
             if mfa_code_result[0] is not None:
                 code = mfa_code_result[0]
-                mfa_code_result[0] = None  # consume it
+                mfa_code_result[0] = None
                 log.info("MFA code from console (%d chars), submitting...", len(code))
                 self._submit_mfa_code(code)
 
         # Wait for app to load
         time.sleep(3)
-        log.debug("Final URL: %s", self._page.url)
+        log.debug("Final URL: %s", self._driver.current_url)
 
         if self._is_on_login_page():
-            print(f"Login failed — still on login page: {self._page.url}")
+            print(f"Login failed — still on login page: {self._driver.current_url}")
             return False
 
         print("Login successful!")
         print("Setting up session...")
-        log.info("Login successful, URL: %s", self._page.url)
-        self._engine.save_session(self._page, self.session_file)
+        log.info("Login successful, URL: %s", self._driver.current_url)
+        self._save_session()
         return self._post_login_setup()
 
-    def _submit_mfa_code(self, code: str):
+    def _submit_mfa_code(self, code: str) -> None:
         """Type an MFA code into the browser and submit."""
         mfa_selectors = [
             'input[name="securityCode"]',
@@ -436,21 +578,20 @@ class GarminClient:
         time.sleep(1)
         for sel in mfa_selectors:
             try:
-                mfa_input = self._page.locator(sel).first
-                mfa_input.wait_for(timeout=3000)
+                mfa_input = WebDriverWait(self._driver, 3).until(EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
                 mfa_input.click()
-                mfa_input.fill(code)
+                mfa_input.clear()
+                mfa_input.send_keys(code)
                 log.info("MFA code filled via selector: %s", sel)
 
-                submit_btn = self._page.locator(
-                    'button[type="submit"], button:has-text("Verify"), '
-                    'button:has-text("Submit"), button:has-text("Continue"), '
-                    'button:has-text("Next")'
-                ).first
                 try:
+                    submit_btn = self._driver.find_element(
+                        By.CSS_SELECTOR,
+                        'button[type="submit"]',
+                    )
                     submit_btn.click()
                 except Exception:
-                    self._page.keyboard.press("Enter")
+                    mfa_input.send_keys(Keys.ENTER)
 
                 log.info("MFA code submitted via browser")
                 return
@@ -460,76 +601,167 @@ class GarminClient:
         log.warning("Could not find MFA input field to fill")
 
     def _is_on_login_page(self) -> bool:
-        url = self._page.url.lower()
+        try:
+            url = self._driver.current_url.lower()
+        except Exception:
+            return True
         if "connect.garmin.com" in url and "sso.garmin.com" not in url:
             return False
         return "sso.garmin.com" in url or "signin" in url or "sign-in" in url
 
+    # ── Post-login setup ─────────────────────────────────────────
+
     def _post_login_setup(self) -> bool:
-        # Make sure we're on the /modern/ page which has the CSRF meta tag
-        current = self._page.url
+        current = self._driver.current_url
         if "/modern/" not in current:
             log.debug("Navigating to /modern/ for CSRF (was on %s)", current)
             try:
-                self._page.goto(
-                    "https://connect.garmin.com/modern/",
-                    wait_until="domcontentloaded",
-                )
+                self._driver.get("https://connect.garmin.com/modern/")
             except Exception:
                 pass
             time.sleep(3)
 
-        setup = self._page.evaluate("""
-            async () => {
-                const csrf = document.querySelector(
-                    'meta[name="csrf-token"], meta[name="_csrf"]'
-                )?.content;
-                const h = {'connect-csrf-token': csrf};
-                const resp = await fetch(
-                    '/gc-api/userprofile-service/socialProfile',
-                    {credentials: 'include', headers: h}
-                );
-                const profile = resp.status === 200 ? await resp.json() : null;
-                return {csrf, displayName: profile?.displayName};
-            }
+        setup = self._driver.execute_async_script("""
+            var callback = arguments[arguments.length - 1];
+            (async function() {
+                try {
+                    var csrf = document.querySelector(
+                        'meta[name="csrf-token"], meta[name="_csrf"]'
+                    )?.content;
+                    var h = {'connect-csrf-token': csrf};
+                    var resp = await fetch(
+                        '/gc-api/userprofile-service/socialProfile',
+                        {credentials: 'include', headers: h}
+                    );
+                    var profile = resp.status === 200 ? await resp.json() : null;
+                    return {csrf: csrf, displayName: profile ? profile.displayName : null};
+                } catch(e) {
+                    return {error: String(e)};
+                }
+            })().then(callback).catch(function(e) { callback({error: String(e)}); });
         """)
-        self._csrf = setup.get("csrf")
-        self._display_name = setup.get("displayName")
+
+        self._csrf = setup.get("csrf") if setup else None
+        self._csrf_time = time.time() if self._csrf else 0
+        self._display_name = setup.get("displayName") if setup else None
         if not self._csrf:
             log.debug("Could not extract CSRF token")
             return False
         log.info("Display name: %s", self._display_name)
         return True
 
+    def _ensure_csrf(self) -> Optional[str]:
+        """Re-read CSRF from page meta tag if stale."""
+        if self._csrf and time.time() - self._csrf_time < CSRF_TTL:
+            return self._csrf
+        self._ensure_on_garmin()
+        csrf = self._driver.execute_script(
+            'return document.querySelector(\'meta[name="csrf-token"], meta[name="_csrf"]\')?.content'
+        )
+        if csrf:
+            self._csrf = csrf
+            self._csrf_time = time.time()
+        return self._csrf
+
+    def _ensure_on_garmin(self) -> None:
+        """Make sure the browser is on connect.garmin.com for fetch context."""
+        try:
+            current = self._driver.current_url
+        except Exception:
+            return
+        if "connect.garmin.com" not in current or "sso.garmin.com" in current:
+            self._driver.get("https://connect.garmin.com/modern/")
+            time.sleep(2)
+
+    # ── Public API ───────────────────────────────────────────────
+
+    def navigate(self, url: str) -> None:
+        """Navigate the browser to a URL (same-origin, no CF challenge expected)."""
+        self._driver.get(url)
+        time.sleep(2)
+
+    def api_fetch(self, api_path: str):
+        """Fetch JSON from a /gc-api endpoint via the browser context.
+
+        Returns the parsed JSON or None on failure.
+        """
+        self._ensure_on_garmin()
+        csrf = self._ensure_csrf()
+        return self._driver.execute_async_script(
+            """
+            var callback = arguments[arguments.length - 1];
+            var url = arguments[0];
+            var csrf = arguments[1];
+            (async function() {
+                try {
+                    var resp = await fetch(url, {
+                        credentials: 'include',
+                        headers: {'connect-csrf-token': csrf || '', 'Accept': 'application/json'}
+                    });
+                    if (resp.status !== 200) return null;
+                    return await resp.json();
+                } catch(e) { return null; }
+            })().then(callback).catch(function() { callback(null); });
+        """,
+            api_path,
+            csrf,
+        )
+
+    def download_file(self, api_path: str) -> Optional[bytes]:
+        """Download a binary file from a /gc-api endpoint. Returns bytes or None."""
+        self._ensure_on_garmin()
+        csrf = self._ensure_csrf()
+        result = self._driver.execute_async_script(
+            """
+            var callback = arguments[arguments.length - 1];
+            var url = arguments[0];
+            var csrf = arguments[1];
+            (async function() {
+                try {
+                    var resp = await fetch(url, {
+                        credentials: 'include',
+                        headers: {'connect-csrf-token': csrf || ''}
+                    });
+                    if (resp.status !== 200) return {status: resp.status};
+                    var buffer = await resp.arrayBuffer();
+                    return {status: 200, data: Array.from(new Uint8Array(buffer))};
+                } catch(e) { return {status: 'error'}; }
+            })().then(callback).catch(function() { callback({status: 'error'}); });
+        """,
+            api_path,
+            csrf,
+        )
+        if result and result.get("status") == 200 and result.get("data"):
+            return bytes(result["data"])
+        return None
+
+    # ── Batch fetching ───────────────────────────────────────────
+
     def _fetch_batch(self, rest: dict, gql: dict) -> dict:
         """Fetch a batch of REST + GraphQL endpoints in parallel via browser."""
-        # Ensure we're on the right page (navigation can destroy context)
-        current = self._page.url
-        if "connect.garmin.com" not in current or "sso.garmin.com" in current:
-            try:
-                self._page.goto(
-                    "https://connect.garmin.com/modern/",
-                    wait_until="domcontentloaded",
-                )
-                time.sleep(2)
-            except Exception:
-                pass
+        self._ensure_on_garmin()
+        csrf = self._ensure_csrf()
 
         rest_entries = list(rest.items())
         gql_entries = list(gql.items())
 
-        return self._page.evaluate(
+        result = self._driver.execute_async_script(
             """
-            async ([csrf, restEntries, gqlEntries]) => {
-                const h = {'connect-csrf-token': csrf, 'Accept': 'application/json'};
+            var callback = arguments[arguments.length - 1];
+            var csrf = arguments[0];
+            var restEntries = arguments[1];
+            var gqlEntries = arguments[2];
+
+            (async function() {
+                var h = {'connect-csrf-token': csrf, 'Accept': 'application/json'};
 
                 async function get(url) {
                     try {
-                        const resp = await fetch(url, {credentials:'include', headers: h});
+                        var resp = await fetch(url, {credentials:'include', headers: h});
                         if (resp.status === 200) {
-                            const text = await resp.text();
+                            var text = await resp.text();
                             try { return {status: 200, data: JSON.parse(text)}; }
-                            catch { return {status: 200, data: text}; }
+                            catch(e) { return {status: 200, data: text}; }
                         }
                         return {status: resp.status, data: null};
                     } catch(e) { return {status: 'error', data: e.message}; }
@@ -537,32 +769,40 @@ class GarminClient:
 
                 async function gql(query) {
                     try {
-                        const resp = await fetch('/gc-api/graphql-gateway/graphql', {
+                        var resp = await fetch('/gc-api/graphql-gateway/graphql', {
                             method: 'POST',
                             credentials: 'include',
-                            headers: {...h, 'Content-Type': 'application/json'},
-                            body: JSON.stringify({query})
+                            headers: Object.assign({}, h, {'Content-Type': 'application/json'}),
+                            body: JSON.stringify({query: query})
                         });
                         if (resp.status === 200) return {status: 200, data: await resp.json()};
                         return {status: resp.status, data: null};
                     } catch(e) { return {status: 'error', data: e.message}; }
                 }
 
-                const promises = [
-                    ...restEntries.map(([name, url]) => get(url).then(r => [name, r])),
-                    ...gqlEntries.map(([name, query]) => gql(query).then(r => ['gql_' + name, r])),
-                ];
+                var promises = restEntries.map(function(entry) {
+                    return get(entry[1]).then(function(r) { return [entry[0], r]; });
+                }).concat(gqlEntries.map(function(entry) {
+                    return gql(entry[1]).then(function(r) { return ['gql_' + entry[0], r]; });
+                }));
 
-                const results = await Promise.all(promises);
-                const output = {};
-                for (const [name, result] of results) {
-                    output[name] = result;
+                var results = await Promise.all(promises);
+                var output = {};
+                for (var i = 0; i < results.length; i++) {
+                    output[results[i][0]] = results[i][1];
                 }
                 return output;
-            }
+            })().then(callback).catch(function(e) { callback({error: String(e)}); });
         """,
-            [self._csrf, rest_entries, gql_entries],
+            csrf,
+            rest_entries,
+            gql_entries,
         )
+
+        if result and "error" in result:
+            log.warning("_fetch_batch JS error: %s", result["error"])
+            return {}
+        return result or {}
 
     def _date_chunks(self, start: str, end: str, max_days: int = 28) -> list:
         """Split a date range into chunks of max_days."""
@@ -589,11 +829,9 @@ class GarminClient:
         ----------
         on_batch : callable, optional
             ``on_batch(endpoint_name, data, cal_date=None)`` called after each
-            successful fetch.  When provided, data is saved immediately (direct-
-            to-DB).  When *None*, results accumulate in memory (legacy mode).
+            successful fetch.
         known_activity_ids : set, optional
-            Activity IDs that already have detail data (splits, HR zones, weather).
-            These will be skipped during per-activity detail fetching.
+            Activity IDs that already have detail data — these will be skipped.
         """
         today = target_date or date.today().isoformat()
         e_date = end_date or today
@@ -602,7 +840,6 @@ class GarminClient:
         all_results = {}
 
         def _process_batch(batch_result, cal_date=None):
-            """Send each endpoint result to on_batch or accumulate in memory."""
             for name, result in batch_result.items():
                 if result.get("status") != 200 or not result.get("data"):
                     continue
@@ -616,7 +853,7 @@ class GarminClient:
                         new = result["data"]
                         all_results[name]["data"] = _merge_data(existing, new)
 
-        # 1. Profile endpoints (no date) + profile GraphQL
+        # 1. Profile endpoints (no date)
         print("  Fetching profile data...")
         profile = self._fetch_batch(
             profile_endpoints(),
@@ -624,15 +861,15 @@ class GarminClient:
         )
         _process_batch(profile)
 
-        # 2. Full-range queries (supports 365+ days)
+        # 2. Full-range queries
         print("  Fetching full-range data (activities, HRV, training, VO2max, weight)...")
         full_rest = full_range_rest(self._display_name, s_date, e_date)
         full_gql = full_range_graphql(self._display_name, s_date, e_date)
         full = self._fetch_batch(full_rest, full_gql)
         _process_batch(full)
 
-        # 2b. Paginate through ALL activities (the search endpoint returns max ~100 per page)
-        page_start = 100  # first page (0-99) already fetched above
+        # 2b. Paginate through ALL activities
+        page_start = 100
         while True:
             act_result = self._fetch_batch(
                 {
@@ -657,9 +894,9 @@ class GarminClient:
                     all_results["activities"]["data"].append(a)
             page_start += 100
             if len(activities_page) < 100:
-                break  # last page
+                break
 
-        # 3. Monthly-chunked queries (max 28-day ranges) — REST + GraphQL
+        # 3. Monthly-chunked queries
         print("  Fetching monthly-chunked data (sleep stats, HRV, calories, etc.)...")
         chunks = self._date_chunks(s_date, e_date, max_days=28)
         for i, (cs, ce) in enumerate(chunks):
@@ -669,7 +906,7 @@ class GarminClient:
             chunk_result = self._fetch_batch(m_rest, m_gql)
             _process_batch(chunk_result)
 
-        # 4. Daily-chunked REST + GraphQL (stress, HR, sleep, SpO2, body battery)
+        # 4. Daily-chunked REST + GraphQL
         print("  Fetching daily data (stress, HR, sleep, SpO2, body battery)...")
         all_days = []
         d = date.fromisoformat(s_date)
@@ -693,12 +930,9 @@ class GarminClient:
 
             batch_result = self._fetch_batch(rest_batch, gql_batch)
 
-            # Daily results: split "endpoint_YYYY-MM-DD" into endpoint + date
             for full_name, result in batch_result.items():
                 if result.get("status") != 200 or not result.get("data"):
                     continue
-                # Extract base name and date from "stress_2026-03-29" or "gql_heart_rate_detail_2026-03-29"
-                # Date is always the last 10 chars after the last underscore
                 parts = full_name.rsplit("_", 1)
                 if len(parts) == 2 and len(parts[1]) == 10 and parts[1][4] == "-":
                     base_name = parts[0]
@@ -724,9 +958,7 @@ class GarminClient:
                     else:
                         all_results[base_name] = {"status": 200, "data": [entry]}
 
-        # 5. Per-activity detail data (splits, HR zones, weather, exercise sets)
-        # Only fetch details for activities we don't already have.
-        # First, collect activity IDs from what was already fetched in this run.
+        # 5. Per-activity detail data
         activity_ids = []
 
         for name_key, result in all_results.items():
@@ -738,19 +970,13 @@ class GarminClient:
                         if aid:
                             activity_ids.append(aid)
 
-        # In on_batch mode, we need to check the API — but only if
-        # known_activity_ids suggests there might be new ones.
         if not activity_ids and on_batch:
-            # Quick check: compare activity count in DB vs API
             try:
-                act_result = self._fetch_batch(
-                    {"_activity_ids": "/gc-api/activitylist-service/activities/search/activities?limit=1000&start=0"},
-                    {},
+                act_data = self.api_fetch(
+                    "/gc-api/activitylist-service/activities/search/activities?limit=1000&start=0"
                 )
-                act_data = act_result.get("_activity_ids", {})
-                if act_data.get("status") == 200 and isinstance(act_data.get("data"), list):
-                    all_api_ids = [a.get("activityId") for a in act_data["data"] if a.get("activityId")]
-                    # Only keep IDs that don't have details yet
+                if isinstance(act_data, list):
+                    all_api_ids = [a.get("activityId") for a in act_data if a.get("activityId")]
                     activity_ids = [aid for aid in all_api_ids if aid not in (known_activity_ids or set())]
             except Exception as e:
                 log.debug("Could not fetch activity IDs: %s", e)
@@ -815,12 +1041,20 @@ class GarminClient:
         print(f"Exported {len(export['data'])} datasets to {path} ({size_mb:.1f} MB)")
         return path
 
+    # ── Shutdown ─────────────────────────────────────────────────
+
     def close(self):
-        self._engine.close(self._context, self._playwright, self._browser_ref)
-        self._page = None
-        self._context = None
-        self._playwright = None
-        self._browser_ref = None
+        if self._driver is not None:
+            try:
+                self._driver.quit()
+            except Exception as e:
+                log.debug("driver.quit() error: %s", e)
+            self._driver = None
+        self._write_sentinel()
+        self._stop_xvfb()
+
+
+# ─── Utility functions ───────────────────────────────────────────
 
 
 def _merge_data(existing, new):
@@ -838,7 +1072,6 @@ def _merge_data(existing, new):
         return merged
     if isinstance(existing, list) and isinstance(new, list):
         return existing + new
-    # For scalars, keep the newer value
     return new
 
 
