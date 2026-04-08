@@ -43,6 +43,7 @@ log = logging.getLogger(__name__)
 
 DEFAULT_PROFILE_DIR = Path.home() / ".garmin-client" / "browser_profile"
 
+CONNECT_URL = "https://connect.garmin.com/app/"
 SSO_LOGIN_URL = (
     "https://sso.garmin.com/portal/sso/en-US/sign-in"
     "?clientId=GarminConnect"
@@ -354,9 +355,9 @@ class GarminClient:
     def login(self, timeout_ms: int = 600000) -> bool:
         self._launch_browser()
 
-        log.debug("Navigating to connect.garmin.com/modern/")
+        log.debug("Navigating to %s", CONNECT_URL)
         try:
-            self._uc_navigate("https://connect.garmin.com/modern/", 12)
+            self._uc_navigate(CONNECT_URL, 12)
         except Exception as e:
             log.debug("Initial navigation error (expected for fresh profile): %s", e)
         time.sleep(3)
@@ -373,7 +374,7 @@ class GarminClient:
             # Just try one navigation to /modern/ to see if it wakes up.
             log.debug("On app page but no CSRF — attempting to refresh context")
             try:
-                self._uc_navigate("https://connect.garmin.com/modern/", 12)
+                self._uc_navigate(CONNECT_URL, 12)
                 time.sleep(3)
                 if self._post_login_setup():
                     print("Already logged in (session restored after refresh)")
@@ -543,7 +544,7 @@ class GarminClient:
             if mfa_prompted and poll > 0 and poll % 30 == 0:
                 log.debug("Stuck on SSO after MFA — trying to navigate to app...")
                 try:
-                    self._driver.get("https://connect.garmin.com/modern/")
+                    self._driver.get(CONNECT_URL)
                     time.sleep(2)
                     url = self._driver.current_url
                     if "connect.garmin.com" in url and "sso.garmin.com" not in url:
@@ -625,7 +626,7 @@ class GarminClient:
         if "/modern/" not in current:
             log.debug("Navigating to /modern/ for CSRF (was on %s)", current)
             try:
-                self._driver.get("https://connect.garmin.com/modern/")
+                self._driver.get(CONNECT_URL)
             except Exception:
                 pass
             time.sleep(3)
@@ -679,7 +680,7 @@ class GarminClient:
         except Exception:
             return
         if "connect.garmin.com" not in current or "sso.garmin.com" in current:
-            self._driver.get("https://connect.garmin.com/modern/")
+            self._driver.get(CONNECT_URL)
             time.sleep(2)
 
     # ── Public API ───────────────────────────────────────────────
