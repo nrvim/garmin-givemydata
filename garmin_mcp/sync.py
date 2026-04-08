@@ -61,10 +61,10 @@ def incremental_sync(target_date: str = None) -> dict:
     init_db(conn)
 
     # Build set of already-fetched activity IDs so fetch_all() skips them
-    existing = conn.execute(
-        "SELECT DISTINCT activity_id FROM activity_splits"
-    ).fetchall()
+    existing = conn.execute("SELECT DISTINCT activity_id FROM activity_splits").fetchall()
     known_activity_ids = {row[0] for row in existing}
+    if known_activity_ids:
+        logger.info("Skipping %d activities with existing details", len(known_activity_ids))
 
     counts = {}
 
