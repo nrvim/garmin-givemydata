@@ -72,7 +72,7 @@ Add the MCP server to Claude Code, Claude Desktop, or any MCP client. The config
 }
 ```
 
-**Git clone** — use absolute paths to the venv:
+**Git clone** — use absolute paths to the venv and set `GARMIN_DATA_DIR` so the MCP server finds your database:
 
 ```json
 {
@@ -80,11 +80,16 @@ Add the MCP server to Claude Code, Claude Desktop, or any MCP client. The config
     "garmin": {
       "command": "/absolute/path/to/garmin-givemydata/venv/bin/python",
       "args": ["/absolute/path/to/garmin-givemydata/run_mcp.py"],
-      "cwd": "/absolute/path/to/garmin-givemydata"
+      "cwd": "/absolute/path/to/garmin-givemydata",
+      "env": {
+        "GARMIN_DATA_DIR": "/absolute/path/to/garmin-givemydata"
+      }
     }
   }
 }
 ```
+
+> **Note:** `GARMIN_DATA_DIR` tells the MCP server where `garmin.db` lives. Without it, the server falls back to `~/.garmin-givemydata/` which may not be where your data is if you cloned to a custom location.
 
 Save this as:
 - **Claude Code:** `.mcp.json` in your project root, or `~/.claude/settings.json` under `mcpServers` for global access
@@ -110,7 +115,10 @@ Restart your client and run `/mcp` to approve the server. Then ask:
     "garmin": {
       "command": "C:\\Users\\jane\\code\\garmin-givemydata\\venv\\Scripts\\python.exe",
       "args": ["C:\\Users\\jane\\code\\garmin-givemydata\\run_mcp.py"],
-      "cwd": "C:\\Users\\jane\\code\\garmin-givemydata"
+      "cwd": "C:\\Users\\jane\\code\\garmin-givemydata",
+      "env": {
+        "GARMIN_DATA_DIR": "C:\\Users\\jane\\code\\garmin-givemydata"
+      }
     }
   }
 }
