@@ -60,12 +60,24 @@ def incremental_sync(target_date: str = None) -> dict:
     conn = get_connection()
     init_db(conn)
 
+    # Build set of already-fetched activity IDs so fetch_all() skips them
+    existing = conn.execute("SELECT DISTINCT activity_id FROM activity_splits").fetchall()
+    known_activity_ids = {row[0] for row in existing}
+    if known_activity_ids:
+        logger.info("Skipping %d activities with existing details", len(known_activity_ids))
+
     counts = {}
 
     def on_batch(endpoint_name, data, cal_date=None):
         n = save_to_db(conn, endpoint_name, data, cal_date=cal_date)
         if n > 0:
             counts[endpoint_name] = counts.get(endpoint_name, 0) + n
+        # Track newly fetched activity details so later requests skip them
+        if endpoint_name == "activity_splits" and cal_date:
+            try:
+                known_activity_ids.add(int(cal_date))
+            except (ValueError, TypeError):
+                pass
 
     SESSION_FILE = PROJECT_DIR / "garmin_session.json"
     client = GarminClient(
@@ -87,6 +99,7 @@ def incremental_sync(target_date: str = None) -> dict:
             start_date=yesterday,
             end_date=today,
             on_batch=on_batch,
+            known_activity_ids=known_activity_ids,
         )
     finally:
         client.close()
