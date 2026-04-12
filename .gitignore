@@ -5,6 +5,17 @@ __pycache__/
 browser_profile*/
 garmin_data_for_ai.json
 .env
+.env.*
+
+# Secrets / credentials
+*.pem
+*.key
+credentials.json
+
+# OS
+.DS_Store
+Thumbs.db
+
 debug.log
 test_results.log
 full_run.log
