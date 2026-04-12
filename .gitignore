@@ -7,11 +7,6 @@ garmin_data_for_ai.json
 .env
 .env.*
 
-# Secrets / credentials
-*.pem
-*.key
-credentials.json
-
 # OS
 .DS_Store
 Thumbs.db
