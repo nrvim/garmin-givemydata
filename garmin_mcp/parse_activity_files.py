@@ -27,13 +27,19 @@ def _semicircles_to_degrees(value: object) -> float | None:
 
 
 def _extract_activity_id_from_member(name: str) -> int | None:
-    """Extract activity ID from FIT filename inside ZIP."""
+    """Extract activity ID from FIT filename inside ZIP.
+    
+    Activity IDs must be at least 7 digits (typically Unix timestamps).
+    """
     m = _ACTIVITY_ID_RE.search(name)
     if m:
         try:
-            return int(m.group(1))
+            id_str = m.group(1)
+            # Filter out IDs with fewer than 7 digits (likely test/invalid data)
+            if len(id_str) >= 7:
+                return int(id_str)
         except Exception:
-            return None
+            pass
     return None
 
 
