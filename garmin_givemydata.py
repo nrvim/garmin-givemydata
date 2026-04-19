@@ -274,7 +274,9 @@ examples:
         help="Download FIT files only, skip health data sync",
     )
     fit_group.add_argument(
-        "--latest", action="store_true", help="Download only the latest FIT file (use with --fit-only)"
+        "--latest",
+        action="store_true",
+        help="Fetch only today's data (or download only the latest FIT file with --fit-only)",
     )
     fit_group.add_argument(
         "--date", type=str, help="Download FIT file for a specific date YYYY-MM-DD (use with --fit-only)"
@@ -403,6 +405,11 @@ examples:
         mode = "full"
         start = (today - timedelta(days=365 * 10)).isoformat()
         end = today.isoformat()
+    elif args.latest and not args.fit_only:
+        mode = "incremental"
+        start = today.isoformat()
+        end = today.isoformat()
+        print(f"Fetching latest data for {today.isoformat()}")
     elif args.days:
         mode = "range"
         start = (today - timedelta(days=args.days)).isoformat()

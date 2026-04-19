@@ -28,6 +28,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from seleniumbase import Driver
 
 from .endpoints import (
+    activities_search_url,
     activity_detail_endpoints,
     daily_graphql,
     daily_rest,
@@ -900,11 +901,24 @@ class GarminClient:
         s_date = start_date or (date.fromisoformat(today) - timedelta(days=30)).isoformat()
 
         all_results = {}
+        fetched_activity_ids = []
+
+        def _remember_activity_ids(data):
+            if not isinstance(data, list):
+                return
+            for activity in data:
+                if not isinstance(activity, dict):
+                    continue
+                aid = activity.get("activityId")
+                if aid:
+                    fetched_activity_ids.append(aid)
 
         def _process_batch(batch_result, cal_date=None):
             for name, result in batch_result.items():
                 if result.get("status") != 200 or not result.get("data"):
                     continue
+                if name in ("activities", "activities_range"):
+                    _remember_activity_ids(result["data"])
                 if on_batch:
                     on_batch(name, result["data"], cal_date=cal_date)
                 else:
@@ -930,13 +944,11 @@ class GarminClient:
         full = self._fetch_batch(full_rest, full_gql)
         _process_batch(full)
 
-        # 2b. Paginate through ALL activities
+        # 2b. Paginate remaining activities within the date range
         page_start = 100
         while True:
             act_result = self._fetch_batch(
-                {
-                    f"activities_page_{page_start}": f"/gc-api/activitylist-service/activities/search/activities?limit=100&start={page_start}"
-                },
+                {f"activities_page_{page_start}": activities_search_url(s_date, e_date, offset=page_start)},
                 {},
             )
             page_data = act_result.get(f"activities_page_{page_start}", {})
@@ -946,6 +958,7 @@ class GarminClient:
             if not isinstance(activities_page, list) or len(activities_page) == 0:
                 break
             print(f"    Activities page: fetched {len(activities_page)} more (offset {page_start})")
+            _remember_activity_ids(activities_page)
             if on_batch:
                 for a in activities_page:
                     on_batch("activities", a)
@@ -1021,22 +1034,21 @@ class GarminClient:
                         all_results[base_name] = {"status": 200, "data": [entry]}
 
         # 5. Per-activity detail data
-        activity_ids = []
+        activity_ids = list(dict.fromkeys(fetched_activity_ids))
 
-        for name_key, result in all_results.items():
-            if name_key in ("activities", "activities_range"):
-                data = result.get("data", [])
-                if isinstance(data, list):
-                    for a in data:
-                        aid = a.get("activityId")
-                        if aid:
-                            activity_ids.append(aid)
+        if not activity_ids:
+            for name_key, result in all_results.items():
+                if name_key in ("activities", "activities_range"):
+                    data = result.get("data", [])
+                    if isinstance(data, list):
+                        for a in data:
+                            aid = a.get("activityId")
+                            if aid:
+                                activity_ids.append(aid)
 
         if not activity_ids and on_batch:
             try:
-                act_data = self.api_fetch(
-                    "/gc-api/activitylist-service/activities/search/activities?limit=1000&start=0"
-                )
+                act_data = self.api_fetch(activities_search_url(s_date, e_date, limit=1000))
                 if isinstance(act_data, list):
                     all_api_ids = [a.get("activityId") for a in act_data if a.get("activityId")]
                     activity_ids = [aid for aid in all_api_ids if aid not in (known_activity_ids or set())]
