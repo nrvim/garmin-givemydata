@@ -12,9 +12,13 @@ export_test/
 fit/
 test_everything.py
 tests/
+debug/
 dist/
 *.egg-info/
 *.db-shm
 *.db-wal
 garmin_session.json
 .mcp.json
+.codex
+.codex/
+downloaded_files/

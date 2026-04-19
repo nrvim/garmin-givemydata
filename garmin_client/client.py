@@ -28,6 +28,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from seleniumbase import Driver
 
 from .endpoints import (
+    activities_search_url,
     activity_detail_endpoints,
     daily_graphql,
     daily_rest,
@@ -43,6 +44,7 @@ log = logging.getLogger(__name__)
 
 DEFAULT_PROFILE_DIR = Path.home() / ".garmin-client" / "browser_profile"
 
+CONNECT_URL = "https://connect.garmin.com/app/"
 SSO_LOGIN_URL = (
     "https://sso.garmin.com/portal/sso/en-US/sign-in"
     "?clientId=GarminConnect"
@@ -117,6 +119,7 @@ class GarminClient:
         self._xvfb_proc = None
         self._xvfb_display = None
         self._xvfb_prev_display = None
+        self._save_raw_enabled = False
 
     # ── Display management ───────────────────────────────────────
 
@@ -353,9 +356,9 @@ class GarminClient:
     def login(self, timeout_ms: int = 600000) -> bool:
         self._launch_browser()
 
-        log.debug("Navigating to connect.garmin.com/modern/")
+        log.debug("Navigating to %s", CONNECT_URL)
         try:
-            self._uc_navigate("https://connect.garmin.com/modern/", 12)
+            self._uc_navigate(CONNECT_URL, 12)
         except Exception as e:
             log.debug("Initial navigation error (expected for fresh profile): %s", e)
         time.sleep(3)
@@ -368,20 +371,28 @@ class GarminClient:
                 print("Already logged in (session restored)")
                 self._save_session()
                 return True
-            log.debug("On app page but no CSRF — session invalid, proceeding with login")
+            # If we are on a connect page but CSRF failed, don't clear cookies yet.
+            # Just try one navigation to /modern/ to see if it wakes up.
+            log.debug("On app page but no CSRF — attempting to refresh context")
             try:
-                self._uc_navigate(SSO_LOGIN_URL, 12)
+                self._uc_navigate(CONNECT_URL, 12)
                 time.sleep(3)
+                if self._post_login_setup():
+                    print("Already logged in (session restored after refresh)")
+                    self._save_session()
+                    return True
             except Exception:
                 pass
 
         print("Logging in...")
 
-        try:
-            self._driver.delete_all_cookies()
-            log.debug("Cleared stale cookies")
-        except Exception as e:
-            log.debug("Cookie clear error: %s", e)
+        # Only clear cookies if we are on the SSO login page (fresh login needed)
+        if self._is_on_login_page():
+            try:
+                self._driver.delete_all_cookies()
+                log.debug("Cleared stale cookies for fresh login")
+            except Exception as e:
+                log.debug("Cookie clear error: %s", e)
 
         for attempt in range(3):
             try:
@@ -534,7 +545,7 @@ class GarminClient:
             if mfa_prompted and poll > 0 and poll % 30 == 0:
                 log.debug("Stuck on SSO after MFA — trying to navigate to app...")
                 try:
-                    self._driver.get("https://connect.garmin.com/modern/")
+                    self._driver.get(CONNECT_URL)
                     time.sleep(2)
                     url = self._driver.current_url
                     if "connect.garmin.com" in url and "sso.garmin.com" not in url:
@@ -616,7 +627,7 @@ class GarminClient:
         if "/modern/" not in current:
             log.debug("Navigating to /modern/ for CSRF (was on %s)", current)
             try:
-                self._driver.get("https://connect.garmin.com/modern/")
+                self._driver.get(CONNECT_URL)
             except Exception:
                 pass
             time.sleep(3)
@@ -670,7 +681,7 @@ class GarminClient:
         except Exception:
             return
         if "connect.garmin.com" not in current or "sso.garmin.com" in current:
-            self._driver.get("https://connect.garmin.com/modern/")
+            self._driver.get(CONNECT_URL)
             time.sleep(2)
 
     # ── Public API ───────────────────────────────────────────────
@@ -734,6 +745,43 @@ class GarminClient:
         if result and result.get("status") == 200 and result.get("data"):
             return bytes(result["data"])
         return None
+
+    # ── Save raw debug data ─────────────────────────────────────
+
+    def _save_raw(self, name: str, data):
+        """Save raw JSON response under the ``debug/raw`` directory (next to browser_profile)."""
+        if not self.profile_dir:
+            return
+        raw_dir = self.profile_dir.parent / "debug" / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = name.replace("/", "_").replace("?", "_").replace("=", "_").replace(":", "_")
+        try:
+            payload = json.dumps(data, indent=2, sort_keys=True)
+            file_path = raw_dir / f"{safe_name}.json"
+
+            if file_path.exists():
+                try:
+                    if file_path.read_text() == payload:
+                        return
+                except Exception:
+                    pass
+
+                suffix = 2
+                while True:
+                    candidate = raw_dir / f"{safe_name}__{suffix}.json"
+                    if not candidate.exists():
+                        file_path = candidate
+                        break
+                    try:
+                        if candidate.read_text() == payload:
+                            return
+                    except Exception:
+                        pass
+                    suffix += 1
+
+            file_path.write_text(payload)
+        except Exception as e:
+            log.debug("Could not save raw data: %s", e)
 
     # ── Batch fetching ───────────────────────────────────────────
 
@@ -802,6 +850,15 @@ class GarminClient:
         if result and "error" in result:
             log.warning("_fetch_batch JS error: %s", result["error"])
             return {}
+
+        # Save raw payloads and failures for later replay/debugging.
+        if self._save_raw_enabled and result:
+            for name, res in result.items():
+                if res.get("status") == 200 and res.get("data") is not None:
+                    self._save_raw(name, res["data"])
+                else:
+                    self._save_raw(name, res)
+
         return result or {}
 
     def _date_chunks(self, start: str, end: str, max_days: int = 28) -> list:
@@ -822,6 +879,7 @@ class GarminClient:
         end_date: Optional[str] = None,
         on_batch=None,
         known_activity_ids: Optional[set] = None,
+        save_raw: bool = False,
     ) -> dict:
         """Fetch all data from Garmin Connect.
 
@@ -831,18 +889,36 @@ class GarminClient:
             ``on_batch(endpoint_name, data, cal_date=None)`` called after each
             successful fetch.
         known_activity_ids : set, optional
-            Activity IDs that already have detail data — these will be skipped.
+            Activity IDs that already have detail data (splits, HR zones, weather).
+            These will be skipped during per-activity detail fetching.
+        save_raw : bool, default False
+            Whether to save raw JSON responses under the ``debug/raw`` directory
+            (next to ``browser_profile``).
         """
+        self._save_raw_enabled = save_raw
         today = target_date or date.today().isoformat()
         e_date = end_date or today
         s_date = start_date or (date.fromisoformat(today) - timedelta(days=30)).isoformat()
 
         all_results = {}
+        fetched_activity_ids = []
+
+        def _remember_activity_ids(data):
+            if not isinstance(data, list):
+                return
+            for activity in data:
+                if not isinstance(activity, dict):
+                    continue
+                aid = activity.get("activityId")
+                if aid:
+                    fetched_activity_ids.append(aid)
 
         def _process_batch(batch_result, cal_date=None):
             for name, result in batch_result.items():
                 if result.get("status") != 200 or not result.get("data"):
                     continue
+                if name in ("activities", "activities_range"):
+                    _remember_activity_ids(result["data"])
                 if on_batch:
                     on_batch(name, result["data"], cal_date=cal_date)
                 else:
@@ -868,13 +944,11 @@ class GarminClient:
         full = self._fetch_batch(full_rest, full_gql)
         _process_batch(full)
 
-        # 2b. Paginate through ALL activities
+        # 2b. Paginate remaining activities within the date range
         page_start = 100
         while True:
             act_result = self._fetch_batch(
-                {
-                    f"activities_page_{page_start}": f"/gc-api/activitylist-service/activities/search/activities?limit=100&start={page_start}"
-                },
+                {f"activities_page_{page_start}": activities_search_url(s_date, e_date, offset=page_start)},
                 {},
             )
             page_data = act_result.get(f"activities_page_{page_start}", {})
@@ -884,6 +958,7 @@ class GarminClient:
             if not isinstance(activities_page, list) or len(activities_page) == 0:
                 break
             print(f"    Activities page: fetched {len(activities_page)} more (offset {page_start})")
+            _remember_activity_ids(activities_page)
             if on_batch:
                 for a in activities_page:
                     on_batch("activities", a)
@@ -959,22 +1034,21 @@ class GarminClient:
                         all_results[base_name] = {"status": 200, "data": [entry]}
 
         # 5. Per-activity detail data
-        activity_ids = []
+        activity_ids = list(dict.fromkeys(fetched_activity_ids))
 
-        for name_key, result in all_results.items():
-            if name_key in ("activities", "activities_range"):
-                data = result.get("data", [])
-                if isinstance(data, list):
-                    for a in data:
-                        aid = a.get("activityId")
-                        if aid:
-                            activity_ids.append(aid)
+        if not activity_ids:
+            for name_key, result in all_results.items():
+                if name_key in ("activities", "activities_range"):
+                    data = result.get("data", [])
+                    if isinstance(data, list):
+                        for a in data:
+                            aid = a.get("activityId")
+                            if aid:
+                                activity_ids.append(aid)
 
         if not activity_ids and on_batch:
             try:
-                act_data = self.api_fetch(
-                    "/gc-api/activitylist-service/activities/search/activities?limit=1000&start=0"
-                )
+                act_data = self.api_fetch(activities_search_url(s_date, e_date, limit=1000))
                 if isinstance(act_data, list):
                     all_api_ids = [a.get("activityId") for a in act_data if a.get("activityId")]
                     activity_ids = [aid for aid in all_api_ids if aid not in (known_activity_ids or set())]
