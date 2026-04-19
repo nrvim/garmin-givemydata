@@ -18,6 +18,6 @@ updates:
       day: monday
     open-pull-requests-limit: 5
     labels:
-      - ci
+      - dependencies
     commit-message:
       prefix: "ci"
