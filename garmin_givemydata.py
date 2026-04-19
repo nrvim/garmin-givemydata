@@ -46,7 +46,11 @@ def _get_data_dir() -> Path:
         return p
 
     cwd = Path.cwd()
-    if (cwd / "garmin.db").exists() or (cwd / ".env").exists() or (cwd / "garmin_givemydata.py").exists():
+    if (
+        (cwd / "garmin.db").exists()
+        or (cwd / ".env").exists()
+        or (cwd / "garmin_givemydata.py").exists()
+    ):
         return cwd
 
     home_dir = Path.home() / ".garmin-givemydata"
@@ -106,7 +110,9 @@ def get_db_status() -> dict:
     init_db(conn)
     try:
         rows = db_query(conn, "SELECT COUNT(*) as c FROM daily_summary")[0]["c"]
-        last = db_query(conn, "SELECT MAX(calendar_date) as d FROM daily_summary")[0]["d"]
+        last = db_query(conn, "SELECT MAX(calendar_date) as d FROM daily_summary")[0][
+            "d"
+        ]
         first = db_query(
             conn,
             "SELECT MIN(calendar_date) as d FROM daily_summary WHERE total_steps IS NOT NULL",
@@ -178,7 +184,9 @@ def fetch_direct_to_db(
 
             year_num += 1
             pct = int(year_num / total_chunks * 100)
-            print(f"\n[{pct:3d}%] Year {year_num}/{total_chunks}: {chunk_start.isoformat()} to {chunk_end.isoformat()}")
+            print(
+                f"\n[{pct:3d}%] Year {year_num}/{total_chunks}: {chunk_start.isoformat()} to {chunk_end.isoformat()}"
+            )
 
             prev_total = sum(counts.values())
             client.fetch_all(
@@ -198,25 +206,33 @@ def fetch_direct_to_db(
             cursor = chunk_start - timedelta(days=1)
 
         print("\n[100%] Done.")
-        
+
         # Parse trackpoints for activities that were just processed (same as other data)
         if parse_trackpoints:
             print("Processing trackpoints from FIT files...")
             from garmin_mcp.parse_activity_files import parse_trackpoints_from_directory
-            
+
             fit_dir = DATA_DIR / "fit"
             if fit_dir.exists():
                 # Parse trackpoints for activities that were processed in this sync
-                parsed_data = parse_trackpoints_from_directory(fit_dir, list(known_activity_ids))
+                parsed_data = parse_trackpoints_from_directory(
+                    fit_dir, list(known_activity_ids)
+                )
                 total_trackpoints = 0
-                
+
                 for activity_id, trackpoints in parsed_data:
                     if trackpoints:
                         from garmin_mcp.db import save_to_db
-                        count = save_to_db(conn, "activity_trackpoints", trackpoints, cal_date=str(activity_id))
+
+                        count = save_to_db(
+                            conn,
+                            "activity_trackpoints",
+                            trackpoints,
+                            cal_date=str(activity_id),
+                        )
                         total_trackpoints += count
                         print(f"  Activity {activity_id}: {count} trackpoints")
-                
+
                 if total_trackpoints > 0:
                     print(f"Trackpoints processed: {total_trackpoints} total points")
             else:
@@ -273,11 +289,15 @@ examples:
         choices=list(FETCH_PROFILES.keys()),
         help="What data to fetch (default: all)",
     )
-    fetch_group.add_argument("--full", action="store_true", help="Force full historical fetch")
+    fetch_group.add_argument(
+        "--full", action="store_true", help="Force full historical fetch"
+    )
     fetch_group.add_argument("--days", type=int, help="Fetch last N days")
     fetch_group.add_argument("--since", type=str, help="Fetch from date (YYYY-MM-DD)")
     fetch_group.add_argument(
-        "--save-raw", action="store_true", help="Save raw JSON responses to debug/raw for debugging"
+        "--save-raw",
+        action="store_true",
+        help="Save raw JSON responses to debug/raw for debugging",
     )
     fetch_group.add_argument(
         "--no-files",
@@ -291,10 +311,18 @@ examples:
     )
 
     # Export options
-    export_group = parser.add_argument_group("export options (from local database, no Garmin login needed)")
-    export_group.add_argument("--export", type=str, metavar="DIR", help="Export to CSV + JSON")
-    export_group.add_argument("--export-gpx", type=str, metavar="DIR", help="Export activities as GPX files")
-    export_group.add_argument("--export-tcx", type=str, metavar="DIR", help="Export activities as TCX files")
+    export_group = parser.add_argument_group(
+        "export options (from local database, no Garmin login needed)"
+    )
+    export_group.add_argument(
+        "--export", type=str, metavar="DIR", help="Export to CSV + JSON"
+    )
+    export_group.add_argument(
+        "--export-gpx", type=str, metavar="DIR", help="Export activities as GPX files"
+    )
+    export_group.add_argument(
+        "--export-tcx", type=str, metavar="DIR", help="Export activities as TCX files"
+    )
 
     # FIT-only download
     fit_group = parser.add_argument_group("FIT file download (skip health data sync)")
@@ -309,12 +337,18 @@ examples:
         help="Fetch only today's data (or download only the latest FIT file with --fit-only)",
     )
     fit_group.add_argument(
-        "--date", type=str, help="Download FIT file for a specific date YYYY-MM-DD (use with --fit-only)"
+        "--date",
+        type=str,
+        help="Download FIT file for a specific date YYYY-MM-DD (use with --fit-only)",
     )
 
     # Utility
-    parser.add_argument("--json-import", type=str, help="Import existing JSON file to DB")
-    parser.add_argument("--status", action="store_true", help="Show database status and exit")
+    parser.add_argument(
+        "--json-import", type=str, help="Import existing JSON file to DB"
+    )
+    parser.add_argument(
+        "--status", action="store_true", help="Show database status and exit"
+    )
     parser.add_argument(
         "--visible",
         action="store_true",
@@ -331,7 +365,9 @@ examples:
         else:
             print(f"Database: {DATA_DIR / 'garmin.db'}")
             print(f"  Daily summaries: {status['rows']} days")
-            print(f"  Date range: {status.get('first_date', '?')} to {status.get('last_date', '?')}")
+            print(
+                f"  Date range: {status.get('first_date', '?')} to {status.get('last_date', '?')}"
+            )
 
             conn = get_connection()
             for table in [
@@ -411,7 +447,11 @@ examples:
         # Offer to save to .env so they don't have to enter again
         env_file = DATA_DIR / ".env"
         try:
-            save = input("\n  Save credentials to .env for next time? [Y/n]: ").strip().lower()
+            save = (
+                input("\n  Save credentials to .env for next time? [Y/n]: ")
+                .strip()
+                .lower()
+            )
         except (EOFError, KeyboardInterrupt):
             save = "n"
 
@@ -420,7 +460,9 @@ examples:
             env_file.chmod(0o600)  # restrict to owner-only
             print(f"  Saved to {env_file}")
         else:
-            print("  Not saved. Set GARMIN_EMAIL and GARMIN_PASSWORD environment variables next time.")
+            print(
+                "  Not saved. Set GARMIN_EMAIL and GARMIN_PASSWORD environment variables next time."
+            )
 
     today = date.today()
     profile = args.profile
@@ -460,7 +502,9 @@ examples:
         start = (last - timedelta(days=1)).isoformat()
         end = today.isoformat()
         gap_days = (today - last).days
-        print(f"Database has data through {status['last_date']} ({status['rows']} daily records)")
+        print(
+            f"Database has data through {status['last_date']} ({status['rows']} daily records)"
+        )
         print(f"Fetching {gap_days + 1} days: {start} to {end}")
 
     # ── FIT-only mode ─────────────────────────────────────
@@ -493,13 +537,19 @@ examples:
             if args.latest:
                 activities = act_result[:1]
             elif args.date:
-                activities = [a for a in act_result if a.get("startTimeLocal", "").startswith(args.date)]
+                activities = [
+                    a
+                    for a in act_result
+                    if a.get("startTimeLocal", "").startswith(args.date)
+                ]
                 if not activities:
                     print(f"No activity found for date {args.date}")
                     sys.exit(1)
             elif args.days:
                 cutoff = (today - timedelta(days=args.days)).isoformat()
-                activities = [a for a in act_result if (a.get("startTimeLocal") or "") >= cutoff]
+                activities = [
+                    a for a in act_result if (a.get("startTimeLocal") or "") >= cutoff
+                ]
             else:
                 activities = act_result
 
@@ -514,9 +564,9 @@ examples:
                 date_str = a.get("startTimeLocal", "")
                 safe_name = ""
                 if name:
-                    safe_name = "_" + "".join(c if c.isalnum() or c in "-_ " else "" for c in name).strip().replace(
-                        " ", "_"
-                    )
+                    safe_name = "_" + "".join(
+                        c if c.isalnum() or c in "-_ " else "" for c in name
+                    ).strip().replace(" ", "_")
                 safe_date = date_str[:10] if date_str else str(aid)
                 filename = f"{safe_date}_{aid}{safe_name}.zip"
                 filepath = fit_dir / filename
@@ -562,14 +612,14 @@ examples:
             print("Login failed!")
             sys.exit(1)
 
-    fetch_direct_to_db(
-        client,
-        conn,
-        start,
-        end,
-        parse_trackpoints=args.parse_trackpoints,
-        save_raw=args.save_raw,
-    )
+        fetch_direct_to_db(
+            client,
+            conn,
+            start,
+            end,
+            parse_trackpoints=args.parse_trackpoints,
+            save_raw=args.save_raw,
+        )
 
         # Report actual row counts from the database (not upsert operations)
         tables = db_query(
@@ -580,7 +630,9 @@ examples:
         total = 0
         for t in tables:
             name = t["name"]
-            row_count = db_query(conn, f"SELECT COUNT(*) as cnt FROM [{name}]")[0]["cnt"]
+            row_count = db_query(conn, f"SELECT COUNT(*) as cnt FROM [{name}]")[0][
+                "cnt"
+            ]
             if row_count > 0:
                 print(f"  {name}: {row_count} rows")
                 total += row_count
@@ -599,7 +651,11 @@ examples:
             )
 
             # Only download FIT files we don't already have
-            existing_fits = {f.stem.split("_")[1] for f in fit_dir.glob("*.zip")} if fit_dir.exists() else set()
+            existing_fits = (
+                {f.stem.split("_")[1] for f in fit_dir.glob("*.zip")}
+                if fit_dir.exists()
+                else set()
+            )
             new_activities = [
                 (a["activity_id"], a["activity_name"], a["start_time_local"])
                 for a in activities
@@ -615,9 +671,9 @@ examples:
                 for i, (aid, name, date_str) in enumerate(new_activities):
                     safe_name = ""
                     if name:
-                        safe_name = "_" + "".join(c if c.isalnum() or c in "-_ " else "" for c in name).strip().replace(
-                            " ", "_"
-                        )
+                        safe_name = "_" + "".join(
+                            c if c.isalnum() or c in "-_ " else "" for c in name
+                        ).strip().replace(" ", "_")
                     safe_date = date_str[:10] if date_str else str(aid)
                     filename = f"{safe_date}_{aid}{safe_name}.zip"
                     filepath = fit_dir / filename
@@ -651,7 +707,9 @@ examples:
 
     print("\nDatabase status:")
     print(f"  Daily summaries: {final['rows']} days")
-    print(f"  Date range: {final.get('first_date', '?')} to {final.get('last_date', '?')}")
+    print(
+        f"  Date range: {final.get('first_date', '?')} to {final.get('last_date', '?')}"
+    )
     print(f"  FIT files: {fit_count}")
     print(f"  Location: {DATA_DIR / 'garmin.db'}")
 
