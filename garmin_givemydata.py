@@ -121,6 +121,7 @@ def fetch_direct_to_db(
     conn,
     start_date: str,
     end_date: str,
+    parse_trackpoints: bool = False,
 ) -> None:
     """Fetch data and save each batch directly to SQLite."""
     counts = {}
@@ -194,6 +195,29 @@ def fetch_direct_to_db(
             cursor = chunk_start - timedelta(days=1)
 
         print("\n[100%] Done.")
+        
+        # Parse trackpoints for activities that were just processed (same as other data)
+        if parse_trackpoints:
+            print("Processing trackpoints from FIT files...")
+            from garmin_mcp.parse_activity_files import parse_trackpoints_from_directory
+            
+            fit_dir = DATA_DIR / "fit"
+            if fit_dir.exists():
+                # Parse trackpoints for activities that were processed in this sync
+                parsed_data = parse_trackpoints_from_directory(fit_dir, list(known_activity_ids))
+                total_trackpoints = 0
+                
+                for activity_id, trackpoints in parsed_data:
+                    if trackpoints:
+                        from garmin_mcp.db import save_to_db
+                        count = save_to_db(conn, "activity_trackpoints", trackpoints, cal_date=str(activity_id))
+                        total_trackpoints += count
+                        print(f"  Activity {activity_id}: {count} trackpoints")
+                
+                if total_trackpoints > 0:
+                    print(f"Trackpoints processed: {total_trackpoints} total points")
+            else:
+                print("No FIT directory found, skipping trackpoints")
 
 
 def _log_sync(conn, sync_type, count):
@@ -230,6 +254,7 @@ examples:
   python garmin_givemydata.py                          # all data → SQLite + FIT files
   python garmin_givemydata.py --profile health          # health metrics only (no FIT)
   python garmin_givemydata.py --no-files                # API data only, skip FIT downloads
+  python garmin_givemydata.py --parse-trackpoints       # include GPS trackpoints in sync
   python garmin_givemydata.py --export ./my_data        # export DB to CSV + JSON
   python garmin_givemydata.py --export-gpx ./gpx        # export activities as GPX
   python garmin_givemydata.py --export-tcx ./tcx        # export activities as TCX
@@ -252,6 +277,11 @@ examples:
         "--no-files",
         action="store_true",
         help="Skip FIT file downloads (only fetch API data to SQLite)",
+    )
+    fetch_group.add_argument(
+        "--parse-trackpoints",
+        action="store_true",
+        help="Parse GPS trackpoints from FIT files during sync (same as other activity data)",
     )
 
     # Export options
@@ -519,7 +549,7 @@ examples:
             print("Login failed!")
             sys.exit(1)
 
-        fetch_direct_to_db(client, conn, start, end)
+        fetch_direct_to_db(client, conn, start, end, parse_trackpoints=args.parse_trackpoints)
 
         # Report actual row counts from the database (not upsert operations)
         tables = db_query(

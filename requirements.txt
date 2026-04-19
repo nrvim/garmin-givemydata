@@ -1,3 +1,4 @@
 seleniumbase>=4.30
 httpx>=0.25
 mcp[cli]>=1.0
+fitparse>=1.2.0

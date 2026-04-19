@@ -14,7 +14,39 @@ from garmin_mcp.db import get_connection, init_db, save_to_db
 logger = logging.getLogger(__name__)
 
 
-def incremental_sync(target_date: str = None) -> dict:
+def _parse_trackpoints_for_activities(conn, activity_ids):
+    """Parse trackpoints for activities, same as other activity data processing."""
+    from .parse_activity_files import parse_trackpoints_from_directory
+    
+    if not activity_ids:
+        return 0
+    
+    PROJECT_DIR = Path(__file__).parent.parent
+    fit_dir = PROJECT_DIR / "activities"  # Where FIT files are downloaded
+    
+    if not fit_dir.exists():
+        logger.debug("No activities directory found, skipping trackpoints")
+        return 0
+    
+    logger.info(f"Processing trackpoints for {len(activity_ids)} activities...")
+    
+    # Parse trackpoints from FIT files for these specific activities
+    parsed_data = parse_trackpoints_from_directory(fit_dir, list(activity_ids))
+    
+    total_trackpoints = 0
+    for activity_id, trackpoints in parsed_data:
+        if trackpoints:
+            count = save_to_db(conn, "activity_trackpoints", trackpoints, cal_date=str(activity_id))
+            total_trackpoints += count
+            logger.debug(f"  Activity {activity_id}: {count} trackpoints")
+    
+    if total_trackpoints > 0:
+        logger.info(f"Trackpoints processed: {total_trackpoints} total points")
+    
+    return total_trackpoints
+
+
+def incremental_sync(target_date: str = None, parse_trackpoints: bool = False) -> dict:
     """Fetch today's data from Garmin and save directly to the database.
 
     Parameters
@@ -101,6 +133,13 @@ def incremental_sync(target_date: str = None) -> dict:
             on_batch=on_batch,
             known_activity_ids=known_activity_ids,
         )
+        
+        # Parse trackpoints for newly downloaded activities (same as other data processing)
+        if parse_trackpoints:
+            trackpoint_count = _parse_trackpoints_for_activities(conn, known_activity_ids)
+            if trackpoint_count > 0:
+                counts["activity_trackpoints"] = trackpoint_count
+            
     finally:
         client.close()
 
