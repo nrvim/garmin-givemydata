@@ -46,7 +46,7 @@ def _parse_trackpoints_for_activities(conn, activity_ids):
     return total_trackpoints
 
 
-def incremental_sync(target_date: str = None, parse_trackpoints: bool = False) -> dict:
+def incremental_sync(target_date: str = None, save_raw: bool = False, parse_trackpoints: bool = False) -> dict:
     """Fetch today's data from Garmin and save directly to the database.
 
     Parameters
@@ -54,6 +54,12 @@ def incremental_sync(target_date: str = None, parse_trackpoints: bool = False) -
     target_date:
         ISO date string (``YYYY-MM-DD``) to treat as "today".  Defaults to
         the actual current date.
+    save_raw:
+        Whether to save raw JSON responses under the ``debug/raw`` directory
+        (next to ``browser_profile``).
+    parse_trackpoints:
+        Whether to parse activity trackpoints from downloaded FIT files and
+        store them in ``activity_trackpoints``.
 
     Returns
     -------
@@ -132,6 +138,7 @@ def incremental_sync(target_date: str = None, parse_trackpoints: bool = False) -
             end_date=today,
             on_batch=on_batch,
             known_activity_ids=known_activity_ids,
+            save_raw=save_raw,
         )
         
         # Parse trackpoints for newly downloaded activities (same as other data processing)

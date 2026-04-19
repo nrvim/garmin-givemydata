@@ -122,6 +122,7 @@ def fetch_direct_to_db(
     start_date: str,
     end_date: str,
     parse_trackpoints: bool = False,
+    save_raw: bool = False,
 ) -> None:
     """Fetch data and save each batch directly to SQLite."""
     counts = {}
@@ -158,6 +159,7 @@ def fetch_direct_to_db(
             end_date=end_date,
             on_batch=on_batch,
             known_activity_ids=known_activity_ids,
+            save_raw=save_raw,
         )
     else:
         # Calculate total chunks for progress reporting
@@ -185,6 +187,7 @@ def fetch_direct_to_db(
                 end_date=chunk_end.isoformat(),
                 on_batch=on_batch,
                 known_activity_ids=known_activity_ids,
+                save_raw=save_raw,
             )
 
             new_total = sum(counts.values())
@@ -274,6 +277,9 @@ examples:
     fetch_group.add_argument("--days", type=int, help="Fetch last N days")
     fetch_group.add_argument("--since", type=str, help="Fetch from date (YYYY-MM-DD)")
     fetch_group.add_argument(
+        "--save-raw", action="store_true", help="Save raw JSON responses to debug/raw for debugging"
+    )
+    fetch_group.add_argument(
         "--no-files",
         action="store_true",
         help="Skip FIT file downloads (only fetch API data to SQLite)",
@@ -298,7 +304,9 @@ examples:
         help="Download FIT files only, skip health data sync",
     )
     fit_group.add_argument(
-        "--latest", action="store_true", help="Download only the latest FIT file (use with --fit-only)"
+        "--latest",
+        action="store_true",
+        help="Fetch only today's data (or download only the latest FIT file with --fit-only)",
     )
     fit_group.add_argument(
         "--date", type=str, help="Download FIT file for a specific date YYYY-MM-DD (use with --fit-only)"
@@ -427,6 +435,11 @@ examples:
         mode = "full"
         start = (today - timedelta(days=365 * 10)).isoformat()
         end = today.isoformat()
+    elif args.latest and not args.fit_only:
+        mode = "incremental"
+        start = today.isoformat()
+        end = today.isoformat()
+        print(f"Fetching latest data for {today.isoformat()}")
     elif args.days:
         mode = "range"
         start = (today - timedelta(days=args.days)).isoformat()
@@ -549,7 +562,14 @@ examples:
             print("Login failed!")
             sys.exit(1)
 
-        fetch_direct_to_db(client, conn, start, end, parse_trackpoints=args.parse_trackpoints)
+    fetch_direct_to_db(
+        client,
+        conn,
+        start,
+        end,
+        parse_trackpoints=args.parse_trackpoints,
+        save_raw=args.save_raw,
+    )
 
         # Report actual row counts from the database (not upsert operations)
         tables = db_query(

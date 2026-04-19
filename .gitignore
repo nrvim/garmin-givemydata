@@ -14,9 +14,13 @@ test_everything.py
 .pytest_cache/
 .coverage
 htmlcov/
+debug/
 dist/
 *.egg-info/
 *.db-shm
 *.db-wal
 garmin_session.json
 .mcp.json
+.codex
+.codex/
+downloaded_files/
