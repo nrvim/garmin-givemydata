@@ -26,13 +26,13 @@ def temp_db_file():
     """Create a temporary SQLite database file for testing."""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
-    
+
     conn = sqlite3.connect(db_path)
     init_db(conn)
     conn.close()
-    
+
     yield db_path
-    
+
     # Cleanup
     Path(db_path).unlink(missing_ok=True)
 
@@ -40,7 +40,7 @@ def temp_db_file():
 @pytest.fixture
 def sample_trackpoints():
     """Sample trackpoint data for testing.
-    
+
     Returns list of tuples: (seq, timestamp, lat, lon, alt, dist, speed, hr, cad, pwr, temp)
     """
     return [

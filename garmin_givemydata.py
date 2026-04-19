@@ -121,7 +121,6 @@ def fetch_direct_to_db(
     conn,
     start_date: str,
     end_date: str,
-    parse_trackpoints: bool = False,
     save_raw: bool = False,
 ) -> None:
     """Fetch data and save each batch directly to SQLite."""
@@ -198,29 +197,59 @@ def fetch_direct_to_db(
             cursor = chunk_start - timedelta(days=1)
 
         print("\n[100%] Done.")
-        
-        # Parse trackpoints for activities that were just processed (same as other data)
-        if parse_trackpoints:
-            print("Processing trackpoints from FIT files...")
-            from garmin_mcp.parse_activity_files import parse_trackpoints_from_directory
-            
-            fit_dir = DATA_DIR / "fit"
-            if fit_dir.exists():
-                # Parse trackpoints for activities that were processed in this sync
-                parsed_data = parse_trackpoints_from_directory(fit_dir, list(known_activity_ids))
-                total_trackpoints = 0
-                
-                for activity_id, trackpoints in parsed_data:
-                    if trackpoints:
-                        from garmin_mcp.db import save_to_db
-                        count = save_to_db(conn, "activity_trackpoints", trackpoints, cal_date=str(activity_id))
-                        total_trackpoints += count
-                        print(f"  Activity {activity_id}: {count} trackpoints")
-                
-                if total_trackpoints > 0:
-                    print(f"Trackpoints processed: {total_trackpoints} total points")
-            else:
-                print("No FIT directory found, skipping trackpoints")
+
+
+def _save_trackpoints_from_fit(conn, fit_path: Path) -> tuple[str, int]:
+    """Parse one downloaded FIT archive and store its trackpoints."""
+    from garmin_mcp.parse_activity_files import parse_trackpoints_from_fit_archive
+
+    try:
+        activity_id, trackpoints = parse_trackpoints_from_fit_archive(fit_path)
+    except Exception:
+        return "failed", 0
+
+    if activity_id is None or not trackpoints:
+        return "skipped", 0
+
+    count = save_to_db(conn, "activity_trackpoints", trackpoints, cal_date=str(activity_id))
+    return "ingested", count
+
+
+def _parse_trackpoints_from_fit_dir(conn, fit_dir: Path) -> dict[str, int]:
+    """Parse all downloaded FIT archives in a directory."""
+    summary = {
+        "targeted": 0,
+        "ingested": 0,
+        "skipped": 0,
+        "failed": 0,
+        "rows": 0,
+    }
+
+    if not fit_dir.exists():
+        return summary
+
+    for fit_path in sorted(fit_dir.glob("*.zip")):
+        summary["targeted"] += 1
+        status, count = _save_trackpoints_from_fit(conn, fit_path)
+        if status == "ingested":
+            summary["ingested"] += 1
+            summary["rows"] += count
+        elif status == "skipped":
+            summary["skipped"] += 1
+        else:
+            summary["failed"] += 1
+
+    return summary
+
+
+def _print_trackpoint_summary(summary: dict[str, int], prefix: str = "") -> None:
+    print(
+        f"{prefix}Trackpoints: "
+        f"{summary['ingested']} ingested, "
+        f"{summary['skipped']} skipped, "
+        f"{summary['failed']} failed, "
+        f"{summary['rows']} points"
+    )
 
 
 def _log_sync(conn, sync_type, count):
@@ -257,7 +286,8 @@ examples:
   python garmin_givemydata.py                          # all data → SQLite + FIT files
   python garmin_givemydata.py --profile health          # health metrics only (no FIT)
   python garmin_givemydata.py --no-files                # API data only, skip FIT downloads
-  python garmin_givemydata.py --parse-trackpoints       # include GPS trackpoints in sync
+  python garmin_givemydata.py --no-trackpoints          # skip FIT trackpoint parsing
+  python garmin_givemydata.py --rebuild-trackpoints     # reparse existing FIT files
   python garmin_givemydata.py --export ./my_data        # export DB to CSV + JSON
   python garmin_givemydata.py --export-gpx ./gpx        # export activities as GPX
   python garmin_givemydata.py --export-tcx ./tcx        # export activities as TCX
@@ -285,10 +315,12 @@ examples:
         help="Skip FIT file downloads (only fetch API data to SQLite)",
     )
     fetch_group.add_argument(
-        "--parse-trackpoints",
-        action="store_true",
-        help="Parse GPS trackpoints from FIT files during sync (same as other activity data)",
+        "--no-trackpoints",
+        action="store_false",
+        dest="parse_trackpoints",
+        help="Skip GPS trackpoint parsing for newly downloaded FIT files",
     )
+    fetch_group.set_defaults(parse_trackpoints=True)
 
     # Export options
     export_group = parser.add_argument_group("export options (from local database, no Garmin login needed)")
@@ -315,6 +347,11 @@ examples:
     # Utility
     parser.add_argument("--json-import", type=str, help="Import existing JSON file to DB")
     parser.add_argument("--status", action="store_true", help="Show database status and exit")
+    parser.add_argument(
+        "--rebuild-trackpoints",
+        action="store_true",
+        help="Reparse all downloaded FIT files into the activity_trackpoints table and exit",
+    )
     parser.add_argument(
         "--visible",
         action="store_true",
@@ -361,6 +398,19 @@ examples:
         from garmin_mcp.import_json import main as import_main
 
         import_main(args.json_import)
+        return
+
+    # ── Trackpoint rebuild ─────────────────────────────────
+    if args.rebuild_trackpoints:
+        conn = get_connection()
+        init_db(conn)
+        try:
+            fit_dir = DATA_DIR / "fit"
+            summary = _parse_trackpoints_from_fit_dir(conn, fit_dir)
+            print(f"Rebuilt trackpoints from {summary['targeted']} FIT files in {fit_dir}/")
+            _print_trackpoint_summary(summary, prefix="  ")
+        finally:
+            conn.close()
         return
 
     # ── Export (from existing DB, no Garmin login needed) ───
@@ -562,14 +612,13 @@ examples:
             print("Login failed!")
             sys.exit(1)
 
-    fetch_direct_to_db(
-        client,
-        conn,
-        start,
-        end,
-        parse_trackpoints=args.parse_trackpoints,
-        save_raw=args.save_raw,
-    )
+        fetch_direct_to_db(
+            client,
+            conn,
+            start,
+            end,
+            save_raw=args.save_raw,
+        )
 
         # Report actual row counts from the database (not upsert operations)
         tables = db_query(
@@ -612,6 +661,13 @@ examples:
                 )
 
                 downloaded = 0
+                trackpoint_summary = {
+                    "targeted": 0,
+                    "ingested": 0,
+                    "skipped": 0,
+                    "failed": 0,
+                    "rows": 0,
+                }
                 for i, (aid, name, date_str) in enumerate(new_activities):
                     safe_name = ""
                     if name:
@@ -629,6 +685,16 @@ examples:
                         with open(filepath, "wb") as f:
                             f.write(data)
                         downloaded += 1
+                        if args.parse_trackpoints:
+                            trackpoint_summary["targeted"] += 1
+                            status, count = _save_trackpoints_from_fit(conn, filepath)
+                            if status == "ingested":
+                                trackpoint_summary["ingested"] += 1
+                                trackpoint_summary["rows"] += count
+                            elif status == "skipped":
+                                trackpoint_summary["skipped"] += 1
+                            else:
+                                trackpoint_summary["failed"] += 1
 
                     if downloaded > 0 and downloaded % 10 == 0:
                         print(f"  {downloaded}/{len(new_activities)} downloaded...")
@@ -637,6 +703,8 @@ examples:
                         time.sleep(1)
 
                 print(f"  FIT files: {downloaded} downloaded to {fit_dir}/")
+                if args.parse_trackpoints and trackpoint_summary["targeted"]:
+                    _print_trackpoint_summary(trackpoint_summary, prefix="  ")
             else:
                 print(f"\nFIT files: all {len(existing_fits)} already downloaded")
 

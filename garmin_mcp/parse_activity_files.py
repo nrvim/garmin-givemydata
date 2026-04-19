@@ -8,7 +8,7 @@ import io
 import re
 import zipfile
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 
 from fitparse import FitFile
 
@@ -28,7 +28,7 @@ def _semicircles_to_degrees(value: object) -> float | None:
 
 def _extract_activity_id_from_member(name: str) -> int | None:
     """Extract activity ID from FIT filename inside ZIP.
-    
+
     Activity IDs must be at least 7 digits (typically Unix timestamps).
     """
     m = _ACTIVITY_ID_RE.search(name)
@@ -105,7 +105,7 @@ def parse_trackpoints_from_fit_archive(
 
     # Try to extract activity ID from filename first
     activity_id = _activity_id_from_zip_filename(fit_archive_path)
-    
+
     try:
         with zipfile.ZipFile(fit_archive_path, "r") as zf:
             fit_members = [n for n in zf.namelist() if n.lower().endswith(".fit")]
@@ -141,23 +141,23 @@ def parse_trackpoints_from_directory(
         List of (activity_id, trackpoint_rows) tuples
     """
     results = []
-    
+
     if not fit_dir.exists():
         return results
 
     # Find all ZIP files
     zip_files = list(fit_dir.glob("*.zip"))
-    
+
     for zip_path in zip_files:
         activity_id, rows = parse_trackpoints_from_fit_archive(zip_path)
-        
+
         if activity_id is None or not rows:
             continue
-            
+
         # Filter by activity_ids if provided
         if activity_ids is not None and activity_id not in activity_ids:
             continue
-            
+
         results.append((activity_id, rows))
-    
+
     return results

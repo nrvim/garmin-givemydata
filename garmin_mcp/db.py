@@ -1699,10 +1699,10 @@ def upsert_activity_trackpoints(conn: sqlite3.Connection, activity_id: int, trac
     """Upsert trackpoints for an activity. Expects list of tuples: (seq, timestamp, lat, lon, alt, dist, speed, hr, cad, pwr, temp)"""
     if not trackpoints:
         return 0
-    
+
     # Delete existing trackpoints for this activity
     conn.execute("DELETE FROM activity_trackpoints WHERE activity_id = ?", (activity_id,))
-    
+
     # Insert new trackpoints
     conn.executemany(
         """
