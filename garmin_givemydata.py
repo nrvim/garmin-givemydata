@@ -260,60 +260,6 @@ def _print_trackpoint_summary(summary: dict[str, int], prefix: str = "") -> None
     )
 
 
-def _parse_trackpoints(conn, start_date: str | None = None, end_date: str | None = None) -> int:
-    """Parse FIT archives into activity_trackpoints and return inserted row count."""
-    from garmin_mcp.parse_activity_files import parse_trackpoints_from_directory
-
-    print("Processing trackpoints from FIT files...")
-    fit_dir = DATA_DIR / "fit"
-    if not fit_dir.exists():
-        print(
-            "No FIT directory found. Run once without --no-files (or use --fit-only) to download FIT files first."
-        )
-        return 0
-
-    activity_ids = None
-    if start_date and end_date:
-        rows = db_query(
-            conn,
-            """
-            SELECT DISTINCT activity_id
-            FROM activity
-            WHERE start_time_local IS NOT NULL
-              AND substr(start_time_local, 1, 10) BETWEEN ? AND ?
-            """,
-            (start_date, end_date),
-        )
-        if rows:
-            activity_ids = [r["activity_id"] for r in rows]
-
-    parsed_data = parse_trackpoints_from_directory(fit_dir, activity_ids)
-    total_trackpoints = 0
-    parsed_activities = 0
-
-    for activity_id, trackpoints in parsed_data:
-        if not trackpoints:
-            continue
-        count = save_to_db(
-            conn,
-            "activity_trackpoints",
-            trackpoints,
-            cal_date=str(activity_id),
-        )
-        total_trackpoints += count
-        parsed_activities += 1
-        print(f"  Activity {activity_id}: {count} trackpoints")
-
-    if total_trackpoints > 0:
-        print(
-            f"Trackpoints processed: {total_trackpoints} total points across {parsed_activities} activities"
-        )
-    else:
-        print("No trackpoints were parsed from available FIT files.")
-
-    return total_trackpoints
-
-
 def _log_sync(conn, sync_type, count):
     from datetime import datetime, timezone
 
@@ -809,15 +755,6 @@ examples:
                     _print_trackpoint_summary(trackpoint_summary, prefix="  ")
             else:
                 print(f"\nFIT files: all {len(existing_fits)} already downloaded")
-
-        # Parse trackpoints after data fetch and optional FIT downloads.
-        # This ensures incremental syncs and same-run downloaded FIT files are included.
-        if args.parse_trackpoints:
-            if args.no_files:
-                print(
-                    "Note: --no-files skips FIT downloads; parsing only already-downloaded FIT files."
-                )
-            _parse_trackpoints(conn, start, end)
 
     finally:
         client.close()
