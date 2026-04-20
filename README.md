@@ -245,6 +245,8 @@ garmin-givemydata --profile health             # health metrics only
 garmin-givemydata --profile activities         # activities + FIT files only
 garmin-givemydata --profile sleep              # sleep data only
 garmin-givemydata --no-files                   # skip FIT file downloads
+garmin-givemydata --parse-trackpoints          # parse GPS trackpoints from FIT files into SQLite
+garmin-givemydata --no-files --parse-trackpoints # parse only from already-downloaded FIT files
 garmin-givemydata --status                     # check database contents
 ```
 

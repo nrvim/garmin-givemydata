@@ -19,7 +19,7 @@ class TestSemiclesToDegrees:
         # Garmin uses 2^31 semicircles per 180 degrees
         # 0 semicircles = 0 degrees
         assert _semicircles_to_degrees(0) == 0.0
-        
+
         # Test some known values
         assert _semicircles_to_degrees(2**31) == pytest.approx(180.0, abs=1e-6)
         assert _semicircles_to_degrees(2**30) == pytest.approx(90.0, abs=1e-6)
@@ -61,14 +61,14 @@ class TestActivityIdFromZipFilename:
         """Test extraction from garmin-givemydata ZIP format."""
         # YYYY-MM-DD_<activity_id>_<name>.zip
         from pathlib import Path
-        
+
         assert _activity_id_from_zip_filename(Path("2026-04-19_12345678_test_run.zip")) == 12345678
         assert _activity_id_from_zip_filename(Path("2026-04-19_87654321_my_activity.zip")) == 87654321
 
     def test_multiple_ids_in_filename(self):
         """Test that largest valid ID is selected."""
         from pathlib import Path
-        
+
         # Should find the activity ID (not the date)
         result = _activity_id_from_zip_filename(Path("2026-04-19_12345678_activity.zip"))
         assert result == 12345678
@@ -76,7 +76,7 @@ class TestActivityIdFromZipFilename:
     def test_invalid_zip_filename(self):
         """Test that invalid filenames return None."""
         from pathlib import Path
-        
+
         assert _activity_id_from_zip_filename(Path("invalid.zip")) is None
         assert _activity_id_from_zip_filename(Path("12345_small.zip")) is None
 
@@ -91,10 +91,10 @@ class TestCoordinateConversion:
         # -73.972092° in semicircles: -73.972092 * 2^31 / 180 ≈ -881386784
         lat_semicircles = 484756632
         lon_semicircles = -881386784
-        
+
         lat = _semicircles_to_degrees(lat_semicircles)
         lon = _semicircles_to_degrees(lon_semicircles)
-        
+
         # Should be close to Central Park coordinates (40.785°N, 73.972°W)
         assert lat is not None
         assert lon is not None

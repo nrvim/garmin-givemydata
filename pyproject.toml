@@ -31,6 +31,7 @@ dependencies = [
     "httpx>=0.25",
     "mcp[cli]>=1.0",
     "python-dotenv>=1.0",
+    "fitparse>=1.2.0",
 ]
 
 [project.urls]
@@ -42,12 +43,10 @@ Issues = "https://github.com/nrvim/garmin-givemydata/issues"
 test = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
-    "fitparse>=1.2.0",
 ]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
-    "fitparse>=1.2.0",
     "ruff>=0.1.0",
 ]
 
