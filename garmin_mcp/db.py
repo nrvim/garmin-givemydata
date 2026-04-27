@@ -307,6 +307,22 @@ CREATE TABLE IF NOT EXISTS activity_types (
     raw_json        TEXT
 );
 
+CREATE TABLE IF NOT EXISTS activity_trackpoints (
+    activity_id     INTEGER,
+    seq             INTEGER,
+    timestamp_utc   TEXT,
+    latitude        REAL,
+    longitude       REAL,
+    altitude_m      REAL,
+    distance_m      REAL,
+    speed_mps       REAL,
+    heart_rate_bpm  INTEGER,
+    cadence         INTEGER,
+    power_w         INTEGER,
+    temperature_c   REAL,
+    PRIMARY KEY (activity_id, seq)
+);
+
 -- =========================================================================
 -- Training Tables
 -- =========================================================================
@@ -637,6 +653,7 @@ CREATE TABLE IF NOT EXISTS hrv_timeline (
 );
 
 CREATE INDEX IF NOT EXISTS idx_act_weather ON activity_weather (activity_id);
+CREATE INDEX IF NOT EXISTS idx_trackpoints_activity ON activity_trackpoints (activity_id);
 """
 
 
@@ -1678,6 +1695,27 @@ def upsert_activity_exercise_sets(conn: sqlite3.Connection, activity_id: int, da
     return count
 
 
+def upsert_activity_trackpoints(conn: sqlite3.Connection, activity_id: int, trackpoints: list) -> int:
+    """Upsert trackpoints for an activity. Expects list of tuples: (seq, timestamp, lat, lon, alt, dist, speed, hr, cad, pwr, temp)"""
+    if not trackpoints:
+        return 0
+
+    # Delete existing trackpoints for this activity
+    conn.execute("DELETE FROM activity_trackpoints WHERE activity_id = ?", (activity_id,))
+
+    # Insert new trackpoints
+    conn.executemany(
+        """
+        INSERT INTO activity_trackpoints (
+            activity_id, seq, timestamp_utc, latitude, longitude, altitude_m,
+            distance_m, speed_mps, heart_rate_bpm, cadence, power_w, temperature_c
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [(activity_id, *row) for row in trackpoints],
+    )
+    return len(trackpoints)
+
+
 def upsert_earned_badges(conn: sqlite3.Connection, record: dict) -> None:
     badge_id = record.get("badgeId") or record.get("id")
     if not badge_id:
@@ -1935,7 +1973,7 @@ def upsert_hr_zones(conn, record):
 
 
 def _unwrap_gql_data(data):
-    """Unwrap GraphQL response: {data: {scalarName: [...]}} → [...]"""
+    """Unwrap GraphQL response: {data: {scalarName: [...]}} -> [...]"""
     if not isinstance(data, dict):
         return data
 
@@ -2372,6 +2410,12 @@ def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str
             aid = int(cal_date) if cal_date else None
             if aid:
                 count = upsert_activity_splits(conn, aid, data)
+
+        elif name == "activity_trackpoints":
+            # data should be a list of trackpoint tuples for the activity
+            aid = int(cal_date) if cal_date else None
+            if aid and isinstance(data, list):
+                count = upsert_activity_trackpoints(conn, aid, data)
 
         elif name == "activity_hr_zones":
             aid = int(cal_date) if cal_date else None

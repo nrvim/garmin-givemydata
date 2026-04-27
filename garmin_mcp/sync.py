@@ -9,12 +9,43 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from garmin_mcp.db import get_connection, init_db, save_to_db
+from garmin_mcp.db import DB_PATH, get_connection, init_db, save_to_db
 
 logger = logging.getLogger(__name__)
 
 
-def incremental_sync(target_date: str = None, save_raw: bool = False) -> dict:
+def _parse_trackpoints_for_activities(conn, activity_ids):
+    """Parse trackpoints from already-downloaded FIT archives."""
+    from .parse_activity_files import parse_trackpoints_from_directory
+
+    if not activity_ids:
+        return 0
+
+    fit_dir = Path(DB_PATH).parent / "fit"
+
+    if not fit_dir.exists():
+        logger.debug("No FIT directory found, skipping trackpoints")
+        return 0
+
+    logger.info("Processing trackpoints for %d activities...", len(activity_ids))
+
+    # Parse trackpoints from FIT files for these specific activities
+    parsed_data = parse_trackpoints_from_directory(fit_dir, list(activity_ids))
+
+    total_trackpoints = 0
+    for activity_id, trackpoints in parsed_data:
+        if trackpoints:
+            count = save_to_db(conn, "activity_trackpoints", trackpoints, cal_date=str(activity_id))
+            total_trackpoints += count
+            logger.debug("Activity %s: %d trackpoints", activity_id, count)
+
+    if total_trackpoints > 0:
+        logger.info("Trackpoints processed: %d total points", total_trackpoints)
+
+    return total_trackpoints
+
+
+def incremental_sync(target_date: str = None, save_raw: bool = False, parse_trackpoints: bool = False) -> dict:
     """Fetch today's data from Garmin and save directly to the database.
 
     Parameters
@@ -25,6 +56,9 @@ def incremental_sync(target_date: str = None, save_raw: bool = False) -> dict:
     save_raw:
         Whether to save raw JSON responses under the ``debug/raw`` directory
         (next to ``browser_profile``).
+    parse_trackpoints:
+        Whether to parse activity trackpoints from downloaded FIT files and
+        store them in ``activity_trackpoints``.
 
     Returns
     -------
@@ -105,6 +139,13 @@ def incremental_sync(target_date: str = None, save_raw: bool = False) -> dict:
             known_activity_ids=known_activity_ids,
             save_raw=save_raw,
         )
+
+        # Parse trackpoints from local FIT files when explicitly requested.
+        if parse_trackpoints:
+            trackpoint_count = _parse_trackpoints_for_activities(conn, known_activity_ids)
+            if trackpoint_count > 0:
+                counts["activity_trackpoints"] = trackpoint_count
+
     finally:
         client.close()
 

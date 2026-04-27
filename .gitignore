@@ -11,7 +11,10 @@ full_run.log
 export_test/
 fit/
 test_everything.py
-tests/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
 debug/
 dist/
 *.egg-info/
