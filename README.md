@@ -18,7 +18,7 @@ You paid for the hardware. You generated the data with your body. You should be 
 
 This project gets your data out of Garmin Connect and into a local SQLite database where **you** own it and **AI can analyze it** through an MCP server for Claude Code.
 
-**47 tables, 10+ years of history, 44 MCP tools for AI analysis. Your data stays on your machine.**
+**48 tables, 10+ years of history, 45 MCP tools for AI analysis. Your data stays on your machine.**
 
 ## The Problem
 
@@ -138,13 +138,13 @@ Any client supporting [MCP stdio transport](https://spec.modelcontextprotocol.io
 
 ## What You Get
 
-- **ALL your data** in one command — 47 tables, activities with splits/weather/HR zones, original FIT files
+- **ALL your data** in one command — 48 tables, activities with splits/weather/HR zones/GPS trackpoints, original FIT files
 - **10+ years** of history fetched automatically, smart incremental sync after that
-- **44 MCP tools** for AI analysis — not just raw data, but tools with clinical context, anomaly detection, and professional training metrics
+- **45 MCP tools** for AI analysis — not just raw data, but tools with clinical context, anomaly detection, and professional training metrics
 - **Export to anything** — CSV, JSON, GPX, TCX from your local database
 - **Your data stays local** — nothing is sent anywhere
 
-## MCP Tools (44)
+## MCP Tools (45)
 
 The MCP server gives AI assistants deep access to your health data. Every tool returns **data + context** — not just numbers, but trend direction, anomaly flags, clinical thresholds, and goal attainment.
 
@@ -154,7 +154,7 @@ The MCP server gives AI assistants deep access to your health data. Every tool r
 | Tool | What It Does |
 |------|-------------|
 | `garmin_sync` | Check data freshness and pull latest data from Garmin — always shows when the last sync happened. Use `refresh=False` to just check status |
-| `garmin_schema` | Show all 47 tables, columns, and row counts |
+| `garmin_schema` | Show all 48 tables, columns, and row counts |
 | `garmin_query` | Run any read-only SELECT query (read-only enforced at the SQLite engine level) |
 
 </details>
@@ -192,7 +192,7 @@ The MCP server gives AI assistants deep access to your health data. Every tool r
 </details>
 
 <details open>
-<summary><strong>Training & Performance (13 tools)</strong> — includes tools unique to this project</summary>
+<summary><strong>Training & Performance (14 tools)</strong> — includes tools unique to this project</summary>
 
 | Tool | What It Does |
 |------|-------------|
@@ -201,6 +201,7 @@ The MCP server gives AI assistants deep access to your health data. Every tool r
 | `garmin_compare` | **Side-by-side period comparison** — any two date ranges, all metrics, deltas + % changes |
 | `garmin_activities` | List/filter activities by type and date — power, HR, training load, location |
 | `garmin_activity_detail` | Deep-dive: splits, HR zones, weather, exercise sets in one call |
+| `garmin_activity_trackpoints` | **GPS trackpoints (~1Hz)** — lat/lon, altitude, speed, HR, cadence, power, temperature in chronological order. Paginated. Use for elevation profiles, HR drift, GPS tracks, climb segmentation |
 | `garmin_race_predictions` | 5K/10K/half/marathon times with human-readable formatting and trend |
 | `garmin_endurance_score` | Endurance score with classification tier and trend |
 | `garmin_hill_score` | Hill score with endurance and strength sub-scores |
@@ -311,7 +312,7 @@ fit/                   # Original FIT files (lossless)
 </details>
 
 <details>
-<summary>Comprehensive data — 47 tables</summary>
+<summary>Comprehensive data — 48 tables</summary>
 
 | Category | Data |
 |----------|------|
@@ -332,6 +333,7 @@ fit/                   # Original FIT files (lossless)
 | **Activity HR Zones** | Time spent in each HR zone per activity |
 | **Activity Weather** | Temperature, humidity, wind speed/direction during activity |
 | **Activity Exercise Sets** | Strength training: exercise name, reps, weight, duration per set |
+| **Activity Trackpoints** | GPS samples at ~1Hz: lat/lon, altitude, distance, speed, HR, cadence, power, temperature (parsed from FIT files) |
 | **Weight** | Weight, BMI, body fat, body water, bone mass, muscle mass |
 | **VO2max** | Running and cycling VO2max trend over time |
 | **Blood Pressure** | Systolic, diastolic, pulse |
@@ -359,8 +361,8 @@ garmin-givemydata/
 │   ├── client.py               #   GarminClient (login, fetch, export)
 │   └── endpoints.py            #   API endpoint definitions
 ├── garmin_mcp/                 # MCP server + database layer
-│   ├── db.py                   #   SQLite schema (47 tables), upsert helpers
-│   ├── server.py               #   FastMCP server with 44 tools
+│   ├── db.py                   #   SQLite schema (48 tables), upsert helpers
+│   ├── server.py               #   FastMCP server with 45 tools
 │   ├── export.py               #   CSV, JSON, GPX, TCX export
 │   ├── import_json.py          #   JSON → SQLite bulk import
 │   └── sync.py                 #   Incremental sync engine
@@ -376,7 +378,7 @@ garmin-givemydata/
 Garmin Connect ──→ SQLite (health + activity metrics)
                 └─→ fit/ (original FIT files, lossless)
 
-SQLite ──→ MCP server (AI queries via 44 tools)
+SQLite ──→ MCP server (AI queries via 45 tools)
        ├─→ CSV/JSON (--export)
        └─→ GPX/TCX (--export-gpx, --export-tcx)
 ```
@@ -504,7 +506,7 @@ If PowerShell blocks the activate script: `Set-ExecutionPolicy -ExecutionPolicy 
 <summary>How to help</summary>
 
 - **New endpoints**: Garmin has hundreds of internal APIs. Discover new ones via browser dev tools and add them to `endpoints.py`.
-- **More MCP tools**: The server has 44 tools including CTL/ATL/TSB, recovery signatures, and period comparison. Ideas: injury risk prediction, sleep optimization, race readiness scoring, overtraining detection.
+- **More MCP tools**: The server has 45 tools including CTL/ATL/TSB, recovery signatures, and period comparison. Ideas: injury risk prediction, sleep optimization, race readiness scoring, overtraining detection.
 - **MCP client integrations**: Test with OpenClaw, Cline, Continue, Cursor, or other clients.
 - **Other platforms**: ARM (Raspberry Pi), Docker, etc.
 - **Data visualization**: Dashboards, charts, reports from SQLite.
