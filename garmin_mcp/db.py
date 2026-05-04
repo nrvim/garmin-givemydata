@@ -297,6 +297,8 @@ CREATE TABLE IF NOT EXISTS activity (
     max_temperature                     REAL,
     manufacturer                        TEXT,
     device_id                           INTEGER,
+    direct_workout_feel                 INTEGER,
+    direct_workout_rpe                  INTEGER,
     raw_json                            TEXT
 );
 
@@ -679,12 +681,37 @@ def migrate_training_status_table(conn: sqlite3.Connection) -> None:
                 log.debug("Migration note (training_status.%s): %s", col, e)
 
 
+def migrate_activity_table(conn: sqlite3.Connection) -> None:
+    """Migrate the activity table to include workout feel/RPE columns if missing."""
+    cursor = conn.execute("PRAGMA table_info(activity)")
+    cols = {row[1] for row in cursor.fetchall()}
+    missing_defs = [
+        ("direct_workout_feel", "INTEGER"),
+        ("direct_workout_rpe", "INTEGER"),
+    ]
+    missing_cols = [name for name, _ in missing_defs if name not in cols]
+
+    if missing_cols:
+        log.info(
+            "Migrating activity table, adding columns: %s",
+            ", ".join(missing_cols),
+        )
+        for name, col_type in missing_defs:
+            if name in cols:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE activity ADD COLUMN {name} {col_type}")
+            except sqlite3.OperationalError as e:
+                log.debug("Migration note (activity.%s): %s", name, e)
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Create all tables and indexes if they do not already exist."""
     conn.executescript(_SCHEMA_SQL)
     migrate_weight_table(conn)
     migrate_device_table(conn)
     migrate_training_status_table(conn)
+    migrate_activity_table(conn)
 
     # Only run cleanup/backfill when there are rows that actually need it.
     needs_cleanup = conn.execute(
@@ -1240,7 +1267,8 @@ def upsert_activity(conn: sqlite3.Connection, record: dict) -> None:
             vigorous_intensity_minutes, start_latitude, start_longitude,
             end_latitude, end_longitude, location_name, lap_count,
             water_estimated, min_temperature, max_temperature,
-            manufacturer, device_id, raw_json
+            manufacturer, device_id, direct_workout_feel, direct_workout_rpe,
+            raw_json
         ) VALUES (
             :activity_id, :activity_name, :activity_type, :activity_type_id,
             :parent_type_id, :start_time_local, :start_time_gmt,
@@ -1254,7 +1282,8 @@ def upsert_activity(conn: sqlite3.Connection, record: dict) -> None:
             :vigorous_intensity_minutes, :start_latitude, :start_longitude,
             :end_latitude, :end_longitude, :location_name, :lap_count,
             :water_estimated, :min_temperature, :max_temperature,
-            :manufacturer, :device_id, :raw_json
+            :manufacturer, :device_id, :direct_workout_feel, :direct_workout_rpe,
+            :raw_json
         )
         """,
         {
@@ -1304,6 +1333,8 @@ def upsert_activity(conn: sqlite3.Connection, record: dict) -> None:
             "max_temperature": record.get("maxTemperature"),
             "manufacturer": record.get("manufacturer"),
             "device_id": record.get("deviceId"),
+            "direct_workout_feel": record.get("directWorkoutFeel"),
+            "direct_workout_rpe": record.get("directWorkoutRpe"),
             "raw_json": json.dumps(record),
         },
     )
@@ -1830,6 +1861,12 @@ def upsert_activity_exercise_sets(conn: sqlite3.Connection, activity_id: int, da
     sets = data if isinstance(data, list) else data.get("exerciseSets") or [data]
     count = 0
     for i, s in enumerate(sets):
+        # The Garmin API nests exercise details under an 'exercises' list within each set.
+        # Fall back to top-level keys for backward compatibility.
+        exercises = s.get("exercises") or []
+        first_exercise = exercises[0] if exercises else {}
+        exercise_name = first_exercise.get("name") or s.get("exerciseName")
+        exercise_category = first_exercise.get("category") or s.get("exerciseCategory")
         conn.execute(
             """INSERT OR REPLACE INTO activity_exercise_sets
                (activity_id, set_number, exercise_name, exercise_category,
@@ -1838,8 +1875,8 @@ def upsert_activity_exercise_sets(conn: sqlite3.Connection, activity_id: int, da
             (
                 activity_id,
                 i + 1,
-                s.get("exerciseName"),
-                s.get("exerciseCategory"),
+                exercise_name,
+                exercise_category,
                 s.get("repetitionCount") or s.get("reps"),
                 s.get("weight"),
                 s.get("duration"),
