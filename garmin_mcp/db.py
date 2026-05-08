@@ -1056,9 +1056,7 @@ def upsert_sleep(conn: sqlite3.Connection, record: dict) -> None:
         return
     calendar_date = dto.get("calendarDate") or record.get("date")
     avg_hr_sleep = (
-        dto.get("averageHrSleep")
-        or dto.get("avgSleepHR")
-        or _mean_sample_values(record.get("sleepHeartRate"), "value")
+        dto.get("averageHrSleep") or dto.get("avgSleepHR") or _mean_sample_values(record.get("sleepHeartRate"), "value")
     )
     conn.execute(
         """
@@ -1287,9 +1285,7 @@ def upsert_heart_rate(conn: sqlite3.Connection, record: dict, cal_date: str = No
     if not d:
         return
     avg_hr = (
-        record.get("averageHeartRate")
-        or record.get("avgHR")
-        or _mean_sample_values(record.get("heartRateValues"), 1)
+        record.get("averageHeartRate") or record.get("avgHR") or _mean_sample_values(record.get("heartRateValues"), 1)
     )
     conn.execute(
         "INSERT OR REPLACE INTO heart_rate (calendar_date, resting_hr, min_hr, max_hr, avg_hr, raw_json) "
