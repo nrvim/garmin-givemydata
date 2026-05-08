@@ -5,10 +5,7 @@ and exercise_name/exercise_category extraction in activity_exercise_sets.
 
 import sqlite3
 
-import pytest
-
 from garmin_mcp.db import (
-    init_db,
     migrate_activity_table,
     query,
     upsert_activity,
