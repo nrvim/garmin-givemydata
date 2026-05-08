@@ -40,8 +40,7 @@ class TestUpsertActivityWorkoutFields:
             "startTimeLocal": "2026-05-01T09:00:00",
             "startTimeGMT": "2026-05-01T13:00:00",
             "duration": 3600,
-            "directWorkoutFeel": 4,
-            "directWorkoutRpe": 7,
+            "summaryDTO": {"directWorkoutFeel": 4, "directWorkoutRpe": 7},
         }
         upsert_activity(temp_db, record)
         rows = query(
