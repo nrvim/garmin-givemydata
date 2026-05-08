@@ -261,6 +261,27 @@ _CSV_COLUMN_MAP = {
         "chronological_age": "Chronological Age",
         "fitness_age": "Fitness Age",
     },
+    "earned_badges": {
+        "badge_id": "Badge ID",
+        "badge_key": "Badge Key",
+        "badge_name": "Badge Name",
+        "badge_category": "Category",
+        "earned_date": "Earned Date",
+        "earned_number": "Earned Count",
+    },
+    "challenges": {
+        "id": "Challenge ID",
+        "challenge_type": "Type",
+    },
+    "personal_record": {
+        "id": "Record ID",
+        "display_name": "Name",
+        "activity_type": "Activity Type",
+        "pr_type": "PR Type",
+        "value": "Value",
+        "pr_date": "Date",
+        "activity_id": "Activity ID",
+    },
 }
 
 

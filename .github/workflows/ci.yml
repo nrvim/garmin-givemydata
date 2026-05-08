@@ -76,7 +76,7 @@ jobs:
       - run: pip install -e ".[test]"
       - run: pytest tests/ -v --cov=garmin_mcp.parse_activity_files --cov=garmin_mcp.db --cov-report=xml
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v6
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
