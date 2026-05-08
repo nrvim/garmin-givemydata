@@ -1119,6 +1119,7 @@ def upsert_activity(conn: sqlite3.Connection, record: dict) -> None:
         or record.get("maxBikingCadenceInRevPerMinute")
         or record.get("maxCadence")
     )
+    summary_dto = record.get("summaryDTO") or {}
     conn.execute(
         """
         INSERT OR REPLACE INTO activity (
@@ -1200,8 +1201,8 @@ def upsert_activity(conn: sqlite3.Connection, record: dict) -> None:
             "max_temperature": record.get("maxTemperature"),
             "manufacturer": record.get("manufacturer"),
             "device_id": record.get("deviceId"),
-            "direct_workout_feel": record.get("directWorkoutFeel"),
-            "direct_workout_rpe": record.get("directWorkoutRpe"),
+            "direct_workout_feel": summary_dto.get("directWorkoutFeel"),
+            "direct_workout_rpe": summary_dto.get("directWorkoutRpe"),
             "raw_json": json.dumps(record),
         },
     )
