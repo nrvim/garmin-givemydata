@@ -44,7 +44,9 @@ class TestUpsertActivityWorkoutFields:
             "directWorkoutRpe": 7,
         }
         upsert_activity(temp_db, record)
-        rows = query(temp_db, "SELECT direct_workout_feel, direct_workout_rpe FROM activity WHERE activity_id = ?", [99001])
+        rows = query(
+            temp_db, "SELECT direct_workout_feel, direct_workout_rpe FROM activity WHERE activity_id = ?", [99001]
+        )
         assert len(rows) == 1
         assert rows[0]["direct_workout_feel"] == 4
         assert rows[0]["direct_workout_rpe"] == 7
@@ -59,7 +61,9 @@ class TestUpsertActivityWorkoutFields:
             "duration": 1800,
         }
         upsert_activity(temp_db, record)
-        rows = query(temp_db, "SELECT direct_workout_feel, direct_workout_rpe FROM activity WHERE activity_id = ?", [99002])
+        rows = query(
+            temp_db, "SELECT direct_workout_feel, direct_workout_rpe FROM activity WHERE activity_id = ?", [99002]
+        )
         assert len(rows) == 1
         assert rows[0]["direct_workout_feel"] is None
         assert rows[0]["direct_workout_rpe"] is None
