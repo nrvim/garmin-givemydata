@@ -124,16 +124,27 @@ CREATE TABLE IF NOT EXISTS sleep (
     avg_sleep_stress            REAL,
     sleep_score_feedback        TEXT,
     sleep_score_insight         TEXT,
+    body_battery_change         INTEGER,
+    resting_heart_rate          INTEGER,
+    avg_skin_temp_deviation_c   REAL,
+    avg_skin_temp_deviation_f   REAL,
+    sleep_need_minutes          INTEGER,
+    highest_spo2                REAL,
+    sleep_score_overall         INTEGER,
+    sleep_light_pct             INTEGER,
+    sleep_score_rem             INTEGER,
+    sleep_score_deep            INTEGER,
     raw_json                    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS heart_rate (
-    calendar_date   TEXT PRIMARY KEY,
-    resting_hr      INTEGER,
-    min_hr          INTEGER,
-    max_hr          INTEGER,
-    avg_hr          REAL,
-    raw_json        TEXT
+    calendar_date           TEXT PRIMARY KEY,
+    resting_hr              INTEGER,
+    min_hr                  INTEGER,
+    max_hr                  INTEGER,
+    avg_hr                  REAL,
+    last_7day_avg_resting   REAL,
+    raw_json                TEXT
 );
 
 CREATE TABLE IF NOT EXISTS stress (
@@ -145,19 +156,22 @@ CREATE TABLE IF NOT EXISTS stress (
 );
 
 CREATE TABLE IF NOT EXISTS spo2 (
-    calendar_date   TEXT PRIMARY KEY,
-    avg_spo2        REAL,
-    min_spo2        REAL,
-    max_spo2        REAL,
-    raw_json        TEXT
+    calendar_date                   TEXT PRIMARY KEY,
+    avg_spo2                        REAL,
+    min_spo2                        REAL,
+    max_spo2                        REAL,
+    events_below_threshold          INTEGER,
+    duration_below_threshold_secs   REAL,
+    raw_json                        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS respiration (
-    calendar_date   TEXT PRIMARY KEY,
-    avg_waking      REAL,
-    min_value       REAL,
-    max_value       REAL,
-    raw_json        TEXT
+    calendar_date       TEXT PRIMARY KEY,
+    avg_waking          REAL,
+    avg_sleep           REAL,
+    min_value           REAL,
+    max_value           REAL,
+    raw_json            TEXT
 );
 
 CREATE TABLE IF NOT EXISTS body_battery (
@@ -197,17 +211,20 @@ CREATE TABLE IF NOT EXISTS intensity_minutes (
 );
 
 CREATE TABLE IF NOT EXISTS hydration (
-    calendar_date   TEXT PRIMARY KEY,
-    goal_ml         REAL,
-    intake_ml       REAL,
-    raw_json        TEXT
+    calendar_date       TEXT PRIMARY KEY,
+    goal_ml             REAL,
+    intake_ml           REAL,
+    sweat_loss_ml       REAL,
+    activity_intake_ml  REAL,
+    raw_json            TEXT
 );
 
 CREATE TABLE IF NOT EXISTS fitness_age (
-    calendar_date       TEXT PRIMARY KEY,
-    chronological_age   INTEGER,
-    fitness_age         REAL,
-    raw_json            TEXT
+    calendar_date           TEXT PRIMARY KEY,
+    chronological_age       INTEGER,
+    fitness_age             REAL,
+    achievable_fitness_age  REAL,
+    raw_json                TEXT
 );
 
 CREATE TABLE IF NOT EXISTS daily_movement (
@@ -216,8 +233,12 @@ CREATE TABLE IF NOT EXISTS daily_movement (
 );
 
 CREATE TABLE IF NOT EXISTS wellness_activity (
-    calendar_date   TEXT PRIMARY KEY,
-    raw_json        TEXT
+    calendar_date           TEXT PRIMARY KEY,
+    activity_name           TEXT,
+    wellness_activity_type  TEXT,
+    start_timestamp_local   TEXT,
+    end_timestamp_local     TEXT,
+    raw_json                TEXT
 );
 
 CREATE TABLE IF NOT EXISTS training_status (
@@ -235,8 +256,14 @@ CREATE TABLE IF NOT EXISTS health_status (
 );
 
 CREATE TABLE IF NOT EXISTS daily_events (
-    calendar_date   TEXT PRIMARY KEY,
-    raw_json        TEXT
+    calendar_date           TEXT PRIMARY KEY,
+    activity_type           TEXT,
+    activity_sub_type       TEXT,
+    start_timestamp_local   TEXT,
+    end_timestamp_local     TEXT,
+    duration_seconds        REAL,
+    device_id               TEXT,
+    raw_json                TEXT
 );
 
 CREATE TABLE IF NOT EXISTS activity_trends (
@@ -297,6 +324,11 @@ CREATE TABLE IF NOT EXISTS activity (
     max_temperature                     REAL,
     manufacturer                        TEXT,
     device_id                           INTEGER,
+    body_battery_change                 INTEGER,
+    total_work_kcal                     REAL,
+    avg_grade_adjusted_speed            REAL,
+    activity_steps                      INTEGER,
+    activity_min_hr                     INTEGER,
     raw_json                            TEXT
 );
 
@@ -355,6 +387,7 @@ CREATE TABLE IF NOT EXISTS hrv (
     last_night_avg      REAL,
     last_night_5min_high REAL,
     status              TEXT,
+    feedback_phrase     TEXT,
     baseline_low        REAL,
     baseline_upper      REAL,
     start_timestamp     TEXT,
@@ -393,6 +426,9 @@ CREATE TABLE IF NOT EXISTS weight (
     body_water      REAL,
     bone_mass       REAL,
     muscle_mass     REAL,
+    metabolic_age   REAL,
+    physique_rating INTEGER,
+    visceral_fat    REAL,
     source          TEXT,
     raw_json        TEXT
 );
@@ -421,8 +457,12 @@ CREATE TABLE IF NOT EXISTS sleep_stats (
 );
 
 CREATE TABLE IF NOT EXISTS health_snapshot (
-    calendar_date   TEXT PRIMARY KEY,
-    raw_json        TEXT
+    calendar_date           TEXT PRIMARY KEY,
+    activity_name           TEXT,
+    wellness_activity_type  TEXT,
+    start_timestamp_local   TEXT,
+    end_timestamp_local     TEXT,
+    raw_json                TEXT
 );
 
 CREATE TABLE IF NOT EXISTS workout_schedule (
@@ -467,13 +507,18 @@ CREATE TABLE IF NOT EXISTS device (
 );
 
 CREATE TABLE IF NOT EXISTS gear (
-    gear_id         TEXT PRIMARY KEY,
-    gear_type       TEXT,
-    display_name    TEXT,
-    brand           TEXT,
-    model           TEXT,
-    date_begin      TEXT,
-    raw_json        TEXT
+    gear_id                     TEXT PRIMARY KEY,
+    gear_type                   TEXT,
+    display_name                TEXT,
+    brand                       TEXT,
+    model                       TEXT,
+    date_begin                  TEXT,
+    distance_used_meters        REAL,
+    duration_used_seconds       INTEGER,
+    days_used                   INTEGER,
+    status                      TEXT,
+    max_usage_distance_meters   REAL,
+    raw_json                    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS goals (
@@ -514,6 +559,8 @@ CREATE TABLE IF NOT EXISTS endurance_score (
     classification                  TEXT,
     vo2_max                         REAL,
     vo2_max_precise                 REAL,
+    feedback_phrase                 TEXT,
+    contributors                    TEXT,
     raw_json                        TEXT
 );
 
@@ -522,6 +569,9 @@ CREATE TABLE IF NOT EXISTS hill_score (
     overall_score                   INTEGER,
     endurance_score                 INTEGER,
     strength_score                  INTEGER,
+    vo2_max                         REAL,
+    vo2_max_precise                 REAL,
+    feedback_phrase_id              TEXT,
     raw_json                        TEXT
 );
 
@@ -545,6 +595,25 @@ CREATE TABLE IF NOT EXISTS activity_splits (
     elevation_gain                  REAL,
     elevation_loss                  REAL,
     avg_cadence                     REAL,
+    avg_swim_cadence                REAL,
+    avg_swolf                       REAL,
+    total_strokes                   INTEGER,
+    swim_stroke                     TEXT,
+    num_active_lengths              INTEGER,
+    normalized_power                REAL,
+    avg_respiration_rate            REAL,
+    max_respiration_rate            REAL,
+    start_latitude                  REAL,
+    start_longitude                 REAL,
+    end_latitude                    REAL,
+    end_longitude                   REAL,
+    start_time_gmt                  TEXT,
+    calories                        REAL,
+    left_pedal_smoothness           REAL,
+    right_pedal_smoothness          REAL,
+    left_torque_effectiveness       REAL,
+    right_torque_effectiveness      REAL,
+    surface_unpaved_pct             REAL,
     raw_json                        TEXT,
     PRIMARY KEY (activity_id, split_number)
 );
@@ -657,6 +726,426 @@ CREATE INDEX IF NOT EXISTS idx_trackpoints_activity ON activity_trackpoints (act
 """
 
 
+def migrate_activity_splits_table(conn: sqlite3.Connection) -> None:
+    """Add swim-specific columns to activity_splits and backfill from raw_json."""
+    cursor = conn.execute("PRAGMA table_info(activity_splits)")
+    cols = {row[1] for row in cursor.fetchall()}
+    new_cols = [
+        ("avg_swim_cadence", "REAL"),
+        ("avg_swolf", "REAL"),
+        ("total_strokes", "INTEGER"),
+        ("swim_stroke", "TEXT"),
+        ("num_active_lengths", "INTEGER"),
+    ]
+    added = []
+    for name, col_type in new_cols:
+        if name not in cols:
+            try:
+                conn.execute(f"ALTER TABLE activity_splits ADD COLUMN {name} {col_type}")
+                added.append(name)
+            except sqlite3.OperationalError as e:
+                log.debug("Migration note (activity_splits.%s): %s", name, e)
+
+    if not added:
+        return
+
+    log.info("Migrating activity_splits table, added columns: %s — backfilling from raw_json", ", ".join(added))
+    rows = conn.execute("SELECT activity_id, split_number, raw_json FROM activity_splits WHERE raw_json IS NOT NULL").fetchall()
+    for activity_id, split_number, raw in rows:
+        try:
+            split = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        conn.execute(
+            """UPDATE activity_splits
+               SET avg_swim_cadence   = COALESCE(avg_swim_cadence,   ?),
+                   avg_swolf          = COALESCE(avg_swolf,          ?),
+                   total_strokes      = COALESCE(total_strokes,      ?),
+                   swim_stroke        = COALESCE(swim_stroke,        ?),
+                   num_active_lengths = COALESCE(num_active_lengths, ?)
+               WHERE activity_id = ? AND split_number = ?""",
+            (
+                split.get("averageSwimCadence") or None,
+                split.get("averageSWOLF") or None,
+                split.get("totalNumberOfStrokes") or None,
+                split.get("swimStroke"),
+                split.get("numberOfActiveLengths") or None,
+                activity_id,
+                split_number,
+            ),
+        )
+    log.info("Backfilled swim columns for %d splits", len(rows))
+
+
+def _add_columns(conn: sqlite3.Connection, table: str, columns: list[tuple[str, str]]) -> list[str]:
+    """Add missing columns to *table*. Returns list of added column names."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    added = []
+    for name, col_type in columns:
+        if name not in existing:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
+                added.append(name)
+            except sqlite3.OperationalError as e:
+                # The PRAGMA check above prevents "duplicate column" — anything
+                # reaching here is a real problem (missing table, disk error,
+                # etc.) and should be visible at default log level.
+                log.warning("Could not add %s.%s: %s", table, name, e)
+    if added:
+        log.info("Migrated %s: added %s", table, ", ".join(added))
+    return added
+
+
+def _backfill_from_raw(conn: sqlite3.Connection, table: str, pk_cols: list[str],
+                       added: list[str], mapping: dict[str, str]) -> None:
+    """Backfill *added* columns from raw_json using *mapping* {col: json_key}."""
+    if not added:
+        return
+    active = {c: mapping[c] for c in added if c in mapping}
+    if not active:
+        return
+    pks = ", ".join(pk_cols)
+    rows = conn.execute(f"SELECT {pks}, raw_json FROM {table} WHERE raw_json IS NOT NULL").fetchall()
+    for row in rows:
+        pk_vals = row[:len(pk_cols)]
+        try:
+            data = json.loads(row[len(pk_cols)])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(data, list):
+            continue
+        set_clause = ", ".join(f"{c} = COALESCE({c}, ?)" for c in active)
+        # dict.get returns None for missing keys; do NOT coerce 0/False/'' to None.
+        vals = [data.get(jk) for jk in active.values()]
+        where = " AND ".join(f"{c} = ?" for c in pk_cols)
+        conn.execute(f"UPDATE {table} SET {set_clause} WHERE {where}", vals + list(pk_vals))
+
+
+def migrate_sleep_table(conn: sqlite3.Connection) -> None:
+    added = _add_columns(conn, "sleep", [
+        ("body_battery_change", "INTEGER"),
+        ("resting_heart_rate", "INTEGER"),
+        ("avg_skin_temp_deviation_c", "REAL"),
+        ("avg_skin_temp_deviation_f", "REAL"),
+    ])
+    _backfill_from_raw(conn, "sleep", ["calendar_date"], added, {
+        "body_battery_change": "bodyBatteryChange",
+        "resting_heart_rate": "restingHeartRate",
+        "avg_skin_temp_deviation_c": "avgSkinTempDeviationC",
+        "avg_skin_temp_deviation_f": "avgSkinTempDeviationF",
+    })
+
+
+def migrate_hrv_table(conn: sqlite3.Connection) -> None:
+    added = _add_columns(conn, "hrv", [("feedback_phrase", "TEXT")])
+    _backfill_from_raw(conn, "hrv", ["calendar_date"], added,
+                       {"feedback_phrase": "feedbackPhrase"})
+
+
+def migrate_heart_rate_table(conn: sqlite3.Connection) -> None:
+    added = _add_columns(conn, "heart_rate", [("last_7day_avg_resting", "REAL")])
+    _backfill_from_raw(conn, "heart_rate", ["calendar_date"], added,
+                       {"last_7day_avg_resting": "lastSevenDaysAvgRestingHeartRate"})
+
+
+def migrate_spo2_table(conn: sqlite3.Connection) -> None:
+    added = _add_columns(conn, "spo2", [
+        ("events_below_threshold", "INTEGER"),
+        ("duration_below_threshold_secs", "REAL"),
+    ])
+    _backfill_from_raw(conn, "spo2", ["calendar_date"], added, {
+        "events_below_threshold": "numberOfEventsBelowThreshold",
+        "duration_below_threshold_secs": "durationOfEventsBelowThreshold",
+    })
+
+
+def migrate_respiration_table(conn: sqlite3.Connection) -> None:
+    added = _add_columns(conn, "respiration", [("avg_sleep", "REAL")])
+    _backfill_from_raw(conn, "respiration", ["calendar_date"], added,
+                       {"avg_sleep": "avgSleepRespirationValue"})
+
+
+def migrate_hydration_table(conn: sqlite3.Connection) -> None:
+    added = _add_columns(conn, "hydration", [
+        ("sweat_loss_ml", "REAL"),
+        ("activity_intake_ml", "REAL"),
+    ])
+    _backfill_from_raw(conn, "hydration", ["calendar_date"], added, {
+        "sweat_loss_ml": "sweatLossInML",
+        "activity_intake_ml": "activityIntakeInML",
+    })
+
+
+def migrate_weight_table_v2(conn: sqlite3.Connection) -> None:
+    added = _add_columns(conn, "weight", [
+        ("metabolic_age", "REAL"),
+        ("physique_rating", "INTEGER"),
+    ])
+    _backfill_from_raw(conn, "weight", ["timestamp"], added, {
+        "metabolic_age": "metabolicAge",
+        "physique_rating": "physiqueRating",
+    })
+
+
+def migrate_endurance_score_table(conn: sqlite3.Connection) -> None:
+    added = _add_columns(conn, "endurance_score", [
+        ("feedback_phrase", "TEXT"),
+        ("contributors", "TEXT"),
+    ])
+    if not added:
+        return
+    rows = conn.execute("SELECT calendar_date, raw_json FROM endurance_score WHERE raw_json IS NOT NULL").fetchall()
+    for cal_date, raw in rows:
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        contributors = data.get("contributors")
+        conn.execute(
+            """UPDATE endurance_score
+               SET feedback_phrase = COALESCE(feedback_phrase, ?),
+                   contributors    = COALESCE(contributors, ?)
+               WHERE calendar_date = ?""",
+            (
+                data.get("feedbackPhrase"),
+                json.dumps(contributors) if contributors is not None else None,
+                cal_date,
+            ),
+        )
+
+
+def migrate_hill_score_table(conn: sqlite3.Connection) -> None:
+    added = _add_columns(conn, "hill_score", [
+        ("vo2_max", "REAL"),
+        ("vo2_max_precise", "REAL"),
+        ("feedback_phrase_id", "TEXT"),
+    ])
+    _backfill_from_raw(conn, "hill_score", ["calendar_date"], added, {
+        "vo2_max": "vo2Max",
+        "vo2_max_precise": "vo2MaxPreciseValue",
+        "feedback_phrase_id": "hillScoreFeedbackPhraseId",
+    })
+
+
+def migrate_gear_table(conn: sqlite3.Connection) -> None:
+    added = _add_columns(conn, "gear", [
+        ("distance_used_meters", "REAL"),
+        ("duration_used_seconds", "INTEGER"),
+        ("days_used", "INTEGER"),
+    ])
+    _backfill_from_raw(conn, "gear", ["gear_id"], added, {
+        "distance_used_meters": "distanceUsedMeters",
+        "duration_used_seconds": "durationUsedSeconds",
+        "days_used": "daysUsed",
+    })
+
+
+def migrate_sleep_table_v2(conn: sqlite3.Connection) -> None:
+    """Add sleep score and SpO2/sleep-need columns, backfill from nested raw_json paths.
+
+    Requires SQLite >= 3.25 for ALTER TABLE ... RENAME COLUMN (Sept 2018).
+    Python 3.10+ on any current OS satisfies this.
+
+    The rename block handles an unreleased intermediate schema where columns
+    were named with the wrong unit suffix. RENAME preserves existing values
+    (it doesn't convert them) — if a fork stored seconds in sleep_need_seconds,
+    those seconds-values are now mislabeled as minutes. In practice these
+    columns never shipped, so no upstream user is affected.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(sleep)").fetchall()}
+    if "sleep_need_seconds" in cols and "sleep_need_minutes" not in cols:
+        conn.execute("ALTER TABLE sleep RENAME COLUMN sleep_need_seconds TO sleep_need_minutes")
+    if "sleep_score_composition" in cols and "sleep_light_pct" not in cols:
+        conn.execute("ALTER TABLE sleep RENAME COLUMN sleep_score_composition TO sleep_light_pct")
+    conn.commit()
+
+    _add_columns(conn, "sleep", [
+        ("sleep_need_minutes", "INTEGER"),
+        ("highest_spo2", "REAL"),
+        ("sleep_score_overall", "INTEGER"),
+        ("sleep_light_pct", "INTEGER"),
+        ("sleep_score_rem", "INTEGER"),
+        ("sleep_score_deep", "INTEGER"),
+    ])
+    # All fields are nested under dailySleepDTO — use direct SQL UPDATE with json_extract.
+    # WHERE {col} IS NULL makes the backfill idempotent and safe to re-run even
+    # if the schema is in a partially-migrated state.
+    update_map = {
+        "sleep_need_minutes":  "$.dailySleepDTO.sleepNeed.actual",
+        "highest_spo2":        "$.dailySleepDTO.highestSpO2Value",
+        "sleep_score_overall": "$.dailySleepDTO.sleepScores.overall.value",
+        "sleep_light_pct":     "$.dailySleepDTO.sleepScores.lightPercentage.value",
+        "sleep_score_rem":     "$.dailySleepDTO.sleepScores.remPercentage.value",
+        "sleep_score_deep":    "$.dailySleepDTO.sleepScores.deepPercentage.value",
+    }
+    for col, path in update_map.items():
+        conn.execute(
+            f"UPDATE sleep SET {col} = json_extract(raw_json, ?) WHERE raw_json IS NOT NULL AND {col} IS NULL",
+            (path,),
+        )
+    conn.commit()
+
+
+def migrate_fitness_age_table(conn: sqlite3.Connection) -> None:
+    added = _add_columns(conn, "fitness_age", [
+        ("achievable_fitness_age", "REAL"),
+    ])
+    _backfill_from_raw(conn, "fitness_age", ["calendar_date"], added, {
+        "achievable_fitness_age": "achievableFitnessAge",
+    })
+
+
+def migrate_weight_table_v3(conn: sqlite3.Connection) -> None:
+    added = _add_columns(conn, "weight", [
+        ("visceral_fat", "REAL"),
+    ])
+    _backfill_from_raw(conn, "weight", ["timestamp"], added, {
+        "visceral_fat": "visceralFat",
+    })
+
+
+def migrate_gear_table_v2(conn: sqlite3.Connection) -> None:
+    added = _add_columns(conn, "gear", [
+        ("status", "TEXT"),
+        ("max_usage_distance_meters", "REAL"),
+    ])
+    _backfill_from_raw(conn, "gear", ["gear_id"], added, {
+        "status": "status",
+        "max_usage_distance_meters": "maxUsageDistanceMeters",
+    })
+
+
+def migrate_activity_table(conn: sqlite3.Connection) -> None:
+    """Add new columns to activity table and backfill from summaryDTO in raw_json.
+
+    Note: summaryDTO.totalWork is in kilocalories of mechanical work, not joules
+    (verified against avg_power × duration: 224W × 4648s ≈ 1041 kJ ≈ 248 kcal,
+    matching the stored value of 248.21).
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(activity)").fetchall()}
+    if "total_work_kj" in cols and "total_work_kcal" not in cols:
+        # Pre-release intermediate schema had wrong unit suffix; values were
+        # always kcal — just rename the column.
+        conn.execute("ALTER TABLE activity RENAME COLUMN total_work_kj TO total_work_kcal")
+        conn.commit()
+
+    _add_columns(conn, "activity", [
+        ("body_battery_change", "INTEGER"),
+        ("total_work_kcal", "REAL"),
+        ("avg_grade_adjusted_speed", "REAL"),
+        ("activity_steps", "INTEGER"),
+        ("activity_min_hr", "INTEGER"),
+    ])
+    update_map = {
+        "body_battery_change":      "$.summaryDTO.differenceBodyBattery",
+        "total_work_kcal":          "$.summaryDTO.totalWork",
+        "avg_grade_adjusted_speed": "$.summaryDTO.avgGradeAdjustedSpeed",
+        "activity_steps":           "$.summaryDTO.steps",
+        "activity_min_hr":          "$.summaryDTO.minHR",
+    }
+    for col, path in update_map.items():
+        conn.execute(
+            f"UPDATE activity SET {col} = json_extract(raw_json, ?) WHERE raw_json IS NOT NULL AND {col} IS NULL",
+            (path,),
+        )
+    conn.commit()
+
+
+def migrate_activity_splits_v2(conn: sqlite3.Connection) -> None:
+    added = _add_columns(conn, "activity_splits", [
+        ("normalized_power", "REAL"),
+        ("avg_respiration_rate", "REAL"),
+        ("max_respiration_rate", "REAL"),
+        ("start_latitude", "REAL"),
+        ("start_longitude", "REAL"),
+        ("end_latitude", "REAL"),
+        ("end_longitude", "REAL"),
+        ("start_time_gmt", "TEXT"),
+        ("calories", "REAL"),
+        ("left_pedal_smoothness", "REAL"),
+        ("right_pedal_smoothness", "REAL"),
+        ("left_torque_effectiveness", "REAL"),
+        ("right_torque_effectiveness", "REAL"),
+        ("surface_unpaved_pct", "REAL"),
+    ])
+    _backfill_from_raw(conn, "activity_splits", ["activity_id", "split_number"], added, {
+        "normalized_power": "normalizedPower",
+        "avg_respiration_rate": "avgRespirationRate",
+        "max_respiration_rate": "maxRespirationRate",
+        "start_latitude": "startLatitude",
+        "start_longitude": "startLongitude",
+        "end_latitude": "endLatitude",
+        "end_longitude": "endLongitude",
+        "start_time_gmt": "startTimeGMT",
+        "calories": "calories",
+        "left_pedal_smoothness": "leftPedalSmoothness",
+        "right_pedal_smoothness": "rightPedalSmoothness",
+        "left_torque_effectiveness": "leftTorqueEffectiveness",
+        "right_torque_effectiveness": "rightTorqueEffectiveness",
+        "surface_unpaved_pct": "surfaceTypeUnpavedPercentage",
+    })
+
+
+def migrate_hollow_tables(conn: sqlite3.Connection) -> None:
+    """Add scalar columns to previously raw_json-only tables and backfill."""
+    _add_columns(conn, "daily_events", [
+        ("activity_type", "TEXT"),
+        ("activity_sub_type", "TEXT"),
+        ("start_timestamp_local", "TEXT"),
+        ("end_timestamp_local", "TEXT"),
+        ("duration_seconds", "REAL"),
+        ("device_id", "TEXT"),
+    ])
+    _add_columns(conn, "wellness_activity", [
+        ("activity_name", "TEXT"),
+        ("wellness_activity_type", "TEXT"),
+        ("start_timestamp_local", "TEXT"),
+        ("end_timestamp_local", "TEXT"),
+    ])
+    _add_columns(conn, "health_snapshot", [
+        ("activity_name", "TEXT"),
+        ("wellness_activity_type", "TEXT"),
+        ("start_timestamp_local", "TEXT"),
+        ("end_timestamp_local", "TEXT"),
+    ])
+    # Backfill daily_events via upsert (handles both dict and list raw_json)
+    de_rows = conn.execute(
+        "SELECT calendar_date, raw_json FROM daily_events "
+        "WHERE activity_type IS NULL AND raw_json IS NOT NULL"
+    ).fetchall()
+    for cal_date, raw in de_rows:
+        try:
+            record = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        upsert_daily_events(conn, record, cal_date=cal_date)
+
+    # Backfill scalar columns for each hollow table from their raw_json
+    for table, mapping in [
+        ("wellness_activity", {
+            "activity_name": "activityName",
+            "wellness_activity_type": "wellnessActivityType",
+            "start_timestamp_local": "startTimestampLocal",
+            "end_timestamp_local": "endTimestampLocal",
+        }),
+        ("health_snapshot", {
+            "activity_name": "activityName",
+            "wellness_activity_type": "wellnessActivityType",
+            "start_timestamp_local": "startTimestampLocal",
+            "end_timestamp_local": "endTimestampLocal",
+        }),
+    ]:
+        rows = conn.execute(f"SELECT calendar_date, raw_json FROM {table} WHERE raw_json IS NOT NULL").fetchall()
+        for cal_date, raw in rows:
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            set_parts = ", ".join(f"{col} = COALESCE({col}, ?)" for col in mapping)
+            vals = [data.get(jk) for jk in mapping.values()]
+            conn.execute(f"UPDATE {table} SET {set_parts} WHERE calendar_date = ?", vals + [cal_date])
+
+
 def migrate_training_status_table(conn: sqlite3.Connection) -> None:
     """Migrate the training_status table to include acute and chronic load columns."""
     cursor = conn.execute("PRAGMA table_info(training_status)")
@@ -685,6 +1174,24 @@ def init_db(conn: sqlite3.Connection) -> None:
     migrate_weight_table(conn)
     migrate_device_table(conn)
     migrate_training_status_table(conn)
+    migrate_activity_splits_table(conn)
+    migrate_activity_splits_v2(conn)
+    migrate_hrv_table(conn)
+    migrate_sleep_table(conn)
+    migrate_heart_rate_table(conn)
+    migrate_spo2_table(conn)
+    migrate_respiration_table(conn)
+    migrate_hydration_table(conn)
+    migrate_weight_table_v2(conn)
+    migrate_endurance_score_table(conn)
+    migrate_hill_score_table(conn)
+    migrate_gear_table(conn)
+    migrate_gear_table_v2(conn)
+    migrate_hollow_tables(conn)
+    migrate_sleep_table_v2(conn)
+    migrate_fitness_age_table(conn)
+    migrate_weight_table_v3(conn)
+    migrate_activity_table(conn)
 
     # Only run cleanup/backfill when there are rows that actually need it.
     needs_cleanup = conn.execute(
@@ -1165,45 +1672,79 @@ def upsert_sleep(conn: sqlite3.Connection, record: dict) -> None:
     avg_hr_sleep = (
         dto.get("averageHrSleep") or dto.get("avgSleepHR") or _mean_sample_values(record.get("sleepHeartRate"), "value")
     )
+    # Multiple endpoints write to the same sleep row (REST sleep + GQL sleep_summaries +
+    # GQL sleep_detail). They arrive in arbitrary order and carry different subsets of
+    # fields. INSERT OR REPLACE would silently wipe out values set by a prior endpoint.
+    # INSERT OR IGNORE + UPDATE lets each endpoint contribute what it knows while
+    # COALESCE preserves non-null values already set by earlier writes.
+    conn.execute("INSERT OR IGNORE INTO sleep (calendar_date) VALUES (?)", (calendar_date,))
     conn.execute(
         """
-        INSERT OR REPLACE INTO sleep (
-            calendar_date, sleep_time_seconds, nap_time_seconds,
-            deep_sleep_seconds, light_sleep_seconds, rem_sleep_seconds,
-            awake_sleep_seconds, unmeasurable_sleep_seconds, awake_count,
-            average_spo2, lowest_spo2, average_hr_sleep, average_respiration,
-            lowest_respiration, highest_respiration, avg_sleep_stress,
-            sleep_score_feedback, sleep_score_insight, raw_json
-        ) VALUES (
-            :calendar_date, :sleep_time_seconds, :nap_time_seconds,
-            :deep_sleep_seconds, :light_sleep_seconds, :rem_sleep_seconds,
-            :awake_sleep_seconds, :unmeasurable_sleep_seconds, :awake_count,
-            :average_spo2, :lowest_spo2, :average_hr_sleep, :average_respiration,
-            :lowest_respiration, :highest_respiration, :avg_sleep_stress,
-            :sleep_score_feedback, :sleep_score_insight, :raw_json
-        )
+        UPDATE sleep SET
+            sleep_time_seconds          = ?,
+            nap_time_seconds            = ?,
+            deep_sleep_seconds          = ?,
+            light_sleep_seconds         = ?,
+            rem_sleep_seconds           = ?,
+            awake_sleep_seconds         = ?,
+            unmeasurable_sleep_seconds  = ?,
+            awake_count                 = ?,
+            average_spo2                = ?,
+            lowest_spo2                 = ?,
+            average_hr_sleep            = ?,
+            average_respiration         = ?,
+            lowest_respiration          = ?,
+            highest_respiration         = ?,
+            avg_sleep_stress            = ?,
+            sleep_score_feedback        = ?,
+            sleep_score_insight         = ?,
+            body_battery_change         = COALESCE(?, body_battery_change),
+            resting_heart_rate          = COALESCE(?, resting_heart_rate),
+            avg_skin_temp_deviation_c   = COALESCE(?, avg_skin_temp_deviation_c),
+            avg_skin_temp_deviation_f   = COALESCE(?, avg_skin_temp_deviation_f),
+            sleep_need_minutes          = COALESCE(?, sleep_need_minutes),
+            highest_spo2                = COALESCE(?, highest_spo2),
+            sleep_score_overall         = COALESCE(?, sleep_score_overall),
+            sleep_light_pct             = COALESCE(?, sleep_light_pct),
+            sleep_score_rem             = COALESCE(?, sleep_score_rem),
+            sleep_score_deep            = COALESCE(?, sleep_score_deep),
+            raw_json                    = ?
+        WHERE calendar_date = ?
         """,
-        {
-            "calendar_date": calendar_date,
-            "sleep_time_seconds": sleep_seconds,
-            "nap_time_seconds": dto.get("napTimeSeconds"),
-            "deep_sleep_seconds": dto.get("deepSleepSeconds"),
-            "light_sleep_seconds": dto.get("lightSleepSeconds"),
-            "rem_sleep_seconds": dto.get("remSleepSeconds"),
-            "awake_sleep_seconds": dto.get("awakeSleepSeconds"),
-            "unmeasurable_sleep_seconds": dto.get("unmeasurableSleepSeconds"),
-            "awake_count": dto.get("awakeSleepCount") or dto.get("awakeCount"),
-            "average_spo2": dto.get("averageSpO2Value"),
-            "lowest_spo2": dto.get("lowestSpO2Value"),
-            "average_hr_sleep": avg_hr_sleep,
-            "average_respiration": dto.get("averageRespirationValue"),
-            "lowest_respiration": dto.get("lowestRespirationValue"),
-            "highest_respiration": dto.get("highestRespirationValue"),
-            "avg_sleep_stress": dto.get("avgSleepStress"),
-            "sleep_score_feedback": dto.get("sleepScoreFeedback"),
-            "sleep_score_insight": dto.get("sleepScoreInsight"),
-            "raw_json": json.dumps(record),
-        },
+        (
+            sleep_seconds,
+            dto.get("napTimeSeconds"),
+            dto.get("deepSleepSeconds"),
+            dto.get("lightSleepSeconds"),
+            dto.get("remSleepSeconds"),
+            dto.get("awakeSleepSeconds"),
+            dto.get("unmeasurableSleepSeconds"),
+            dto.get("awakeSleepCount") or dto.get("awakeCount"),
+            dto.get("averageSpO2Value"),
+            dto.get("lowestSpO2Value"),
+            avg_hr_sleep,
+            dto.get("averageRespirationValue"),
+            dto.get("lowestRespirationValue"),
+            dto.get("highestRespirationValue"),
+            dto.get("avgSleepStress"),
+            dto.get("sleepScoreFeedback"),
+            dto.get("sleepScoreInsight"),
+            record.get("bodyBatteryChange"),
+            record.get("restingHeartRate"),
+            record.get("avgSkinTempDeviationC"),
+            record.get("avgSkinTempDeviationF"),
+            (dto.get("sleepNeed") or {}).get("actual") if isinstance(dto.get("sleepNeed"), dict) else dto.get("sleepNeed"),
+            dto.get("highestSpO2Value"),
+            # Guard against Garmin returning null for a specific score sub-dict
+            # (e.g. {"sleepScores": {"overall": null}}) — happens on nights where
+            # scoring failed but the rest of the structure is present.
+            ((dto.get("sleepScores") or {}).get("overall") or {}).get("value"),
+            ((dto.get("sleepScores") or {}).get("lightPercentage") or {}).get("value"),
+            ((dto.get("sleepScores") or {}).get("remPercentage") or {}).get("value"),
+            ((dto.get("sleepScores") or {}).get("deepPercentage") or {}).get("value"),
+            json.dumps(record),
+            calendar_date,
+        ),
     )
 
 
@@ -1225,40 +1766,71 @@ def upsert_activity(conn: sqlite3.Connection, record: dict) -> None:
         or record.get("maxBikingCadenceInRevPerMinute")
         or record.get("maxCadence")
     )
+    # summaryDTO is present in activity_details records; flat list records lack it.
+    # Use INSERT OR IGNORE + UPDATE (not INSERT OR REPLACE) so a flat-list record
+    # arriving after a detailed record doesn't blank out the summaryDTO-only columns.
+    # COALESCE preserves prior non-null values for those fields.
+    summary: dict = record.get("summaryDTO") or {}
+    activity_id = record.get("activityId")
+    conn.execute("INSERT OR IGNORE INTO activity (activity_id) VALUES (?)", (activity_id,))
     conn.execute(
         """
-        INSERT OR REPLACE INTO activity (
-            activity_id, activity_name, activity_type, activity_type_id,
-            parent_type_id, start_time_local, start_time_gmt,
-            duration_seconds, elapsed_duration_seconds, moving_duration_seconds,
-            distance_meters, calories, bmr_calories, average_hr, max_hr,
-            average_speed, max_speed, elevation_gain, elevation_loss,
-            min_elevation, max_elevation, avg_power, max_power, norm_power,
-            training_stress_score, intensity_factor, aerobic_training_effect,
-            anaerobic_training_effect, vo2max_value, avg_cadence, max_cadence,
-            avg_respiration, training_load, moderate_intensity_minutes,
-            vigorous_intensity_minutes, start_latitude, start_longitude,
-            end_latitude, end_longitude, location_name, lap_count,
-            water_estimated, min_temperature, max_temperature,
-            manufacturer, device_id, raw_json
-        ) VALUES (
-            :activity_id, :activity_name, :activity_type, :activity_type_id,
-            :parent_type_id, :start_time_local, :start_time_gmt,
-            :duration_seconds, :elapsed_duration_seconds, :moving_duration_seconds,
-            :distance_meters, :calories, :bmr_calories, :average_hr, :max_hr,
-            :average_speed, :max_speed, :elevation_gain, :elevation_loss,
-            :min_elevation, :max_elevation, :avg_power, :max_power, :norm_power,
-            :training_stress_score, :intensity_factor, :aerobic_training_effect,
-            :anaerobic_training_effect, :vo2max_value, :avg_cadence, :max_cadence,
-            :avg_respiration, :training_load, :moderate_intensity_minutes,
-            :vigorous_intensity_minutes, :start_latitude, :start_longitude,
-            :end_latitude, :end_longitude, :location_name, :lap_count,
-            :water_estimated, :min_temperature, :max_temperature,
-            :manufacturer, :device_id, :raw_json
-        )
+        UPDATE activity SET
+            activity_name = :activity_name,
+            activity_type = :activity_type,
+            activity_type_id = :activity_type_id,
+            parent_type_id = :parent_type_id,
+            start_time_local = :start_time_local,
+            start_time_gmt = :start_time_gmt,
+            duration_seconds = :duration_seconds,
+            elapsed_duration_seconds = :elapsed_duration_seconds,
+            moving_duration_seconds = :moving_duration_seconds,
+            distance_meters = :distance_meters,
+            calories = :calories,
+            bmr_calories = :bmr_calories,
+            average_hr = :average_hr,
+            max_hr = :max_hr,
+            average_speed = :average_speed,
+            max_speed = :max_speed,
+            elevation_gain = :elevation_gain,
+            elevation_loss = :elevation_loss,
+            min_elevation = :min_elevation,
+            max_elevation = :max_elevation,
+            avg_power = :avg_power,
+            max_power = :max_power,
+            norm_power = :norm_power,
+            training_stress_score = :training_stress_score,
+            intensity_factor = :intensity_factor,
+            aerobic_training_effect = :aerobic_training_effect,
+            anaerobic_training_effect = :anaerobic_training_effect,
+            vo2max_value = :vo2max_value,
+            avg_cadence = :avg_cadence,
+            max_cadence = :max_cadence,
+            avg_respiration = :avg_respiration,
+            training_load = :training_load,
+            moderate_intensity_minutes = :moderate_intensity_minutes,
+            vigorous_intensity_minutes = :vigorous_intensity_minutes,
+            start_latitude = :start_latitude,
+            start_longitude = :start_longitude,
+            end_latitude = :end_latitude,
+            end_longitude = :end_longitude,
+            location_name = :location_name,
+            lap_count = :lap_count,
+            water_estimated = :water_estimated,
+            min_temperature = :min_temperature,
+            max_temperature = :max_temperature,
+            manufacturer = :manufacturer,
+            device_id = :device_id,
+            body_battery_change      = COALESCE(:body_battery_change, body_battery_change),
+            total_work_kcal          = COALESCE(:total_work_kcal, total_work_kcal),
+            avg_grade_adjusted_speed = COALESCE(:avg_grade_adjusted_speed, avg_grade_adjusted_speed),
+            activity_steps           = COALESCE(:activity_steps, activity_steps),
+            activity_min_hr          = COALESCE(:activity_min_hr, activity_min_hr),
+            raw_json = :raw_json
+        WHERE activity_id = :activity_id
         """,
         {
-            "activity_id": record.get("activityId"),
+            "activity_id": activity_id,
             "activity_name": record.get("activityName"),
             "activity_type": activity_type_key,
             "activity_type_id": activity_type_id,
@@ -1304,6 +1876,11 @@ def upsert_activity(conn: sqlite3.Connection, record: dict) -> None:
             "max_temperature": record.get("maxTemperature"),
             "manufacturer": record.get("manufacturer"),
             "device_id": record.get("deviceId"),
+            "body_battery_change": summary.get("differenceBodyBattery"),
+            "total_work_kcal": summary.get("totalWork"),
+            "avg_grade_adjusted_speed": summary.get("avgGradeAdjustedSpeed"),
+            "activity_steps": summary.get("steps"),
+            "activity_min_hr": summary.get("minHR"),
             "raw_json": json.dumps(record),
         },
     )
@@ -1363,11 +1940,11 @@ def upsert_hrv(conn: sqlite3.Connection, record: dict) -> None:
         """
         INSERT OR REPLACE INTO hrv (
             calendar_date, weekly_avg, last_night, last_night_avg,
-            last_night_5min_high, status, baseline_low, baseline_upper,
+            last_night_5min_high, status, feedback_phrase, baseline_low, baseline_upper,
             start_timestamp, end_timestamp, raw_json
         ) VALUES (
             :calendar_date, :weekly_avg, :last_night, :last_night_avg,
-            :last_night_5min_high, :status, :baseline_low, :baseline_upper,
+            :last_night_5min_high, :status, :feedback_phrase, :baseline_low, :baseline_upper,
             :start_timestamp, :end_timestamp, :raw_json
         )
         """,
@@ -1378,6 +1955,7 @@ def upsert_hrv(conn: sqlite3.Connection, record: dict) -> None:
             "last_night_avg": record.get("lastNightAvg") or record.get("lastNight5MinHigh"),
             "last_night_5min_high": record.get("lastNight5MinHigh"),
             "status": record.get("status"),
+            "feedback_phrase": record.get("feedbackPhrase"),
             "baseline_low": record.get("baselineLowUpper"),
             "baseline_upper": record.get("baselineBalancedUpper"),
             "start_timestamp": record.get("startTimestampLocal") or record.get("startTimestampGMT"),
@@ -1394,16 +1972,28 @@ def upsert_heart_rate(conn: sqlite3.Connection, record: dict, cal_date: str = No
     avg_hr = (
         record.get("averageHeartRate") or record.get("avgHR") or _mean_sample_values(record.get("heartRateValues"), 1)
     )
+    # gql_heart_rate_detail also routes here but lacks lastSevenDaysAvgRestingHeartRate.
+    # COALESCE preserves the value written by the REST endpoint.
+    conn.execute("INSERT OR IGNORE INTO heart_rate (calendar_date) VALUES (?)", (d,))
     conn.execute(
-        "INSERT OR REPLACE INTO heart_rate (calendar_date, resting_hr, min_hr, max_hr, avg_hr, raw_json) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        """
+        UPDATE heart_rate SET
+            resting_hr              = ?,
+            min_hr                  = ?,
+            max_hr                  = ?,
+            avg_hr                  = ?,
+            last_7day_avg_resting   = COALESCE(?, last_7day_avg_resting),
+            raw_json                = ?
+        WHERE calendar_date = ?
+        """,
         (
-            d,
             record.get("restingHeartRate") or record.get("restingHR"),
             record.get("minHeartRate") or record.get("minHR"),
             record.get("maxHeartRate") or record.get("maxHR"),
             avg_hr,
+            record.get("lastSevenDaysAvgRestingHeartRate"),
             json.dumps(record),
+            d,
         ),
     )
 
@@ -1417,7 +2007,7 @@ def upsert_stress(conn: sqlite3.Connection, record: dict, cal_date: str = None) 
         "VALUES (?, ?, ?, ?, ?)",
         (
             d,
-            record.get("averageStressLevel") or record.get("overallStressLevel"),
+            record.get("avgStressLevel") or record.get("averageStressLevel") or record.get("overallStressLevel"),
             record.get("maxStressLevel") or record.get("highStressDuration"),
             record.get("stressQualifier"),
             json.dumps(record),
@@ -1430,12 +2020,16 @@ def upsert_spo2(conn: sqlite3.Connection, record: dict, cal_date: str = None) ->
     if not d:
         return
     conn.execute(
-        "INSERT OR REPLACE INTO spo2 (calendar_date, avg_spo2, min_spo2, max_spo2, raw_json) VALUES (?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO spo2 "
+        "(calendar_date, avg_spo2, min_spo2, max_spo2, events_below_threshold, duration_below_threshold_secs, raw_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
             d,
             record.get("averageSpo2") or record.get("averageSpO2"),
             record.get("lowestSpo2") or record.get("lowestSpO2"),
             record.get("latestSpo2") or record.get("latestSpO2"),
+            record.get("numberOfEventsBelowThreshold"),
+            record.get("durationOfEventsBelowThreshold"),
             json.dumps(record),
         ),
     )
@@ -1445,15 +2039,26 @@ def upsert_respiration(conn: sqlite3.Connection, record: dict, cal_date: str = N
     d = cal_date or record.get("calendarDate") or record.get("date")
     if not d:
         return
+    # avgSleepRespirationValue may be absent on same-day syncs (sleep not yet processed).
+    # COALESCE preserves the value once it arrives without requiring a full re-sync.
+    conn.execute("INSERT OR IGNORE INTO respiration (calendar_date) VALUES (?)", (d,))
     conn.execute(
-        "INSERT OR REPLACE INTO respiration (calendar_date, avg_waking, min_value, max_value, raw_json) "
-        "VALUES (?, ?, ?, ?, ?)",
+        """
+        UPDATE respiration SET
+            avg_waking  = ?,
+            avg_sleep   = COALESCE(?, avg_sleep),
+            min_value   = ?,
+            max_value   = ?,
+            raw_json    = ?
+        WHERE calendar_date = ?
+        """,
         (
-            d,
             record.get("avgWakingRespirationValue"),
+            record.get("avgSleepRespirationValue"),
             record.get("lowestRespirationValue"),
             record.get("highestRespirationValue"),
             json.dumps(record),
+            d,
         ),
     )
 
@@ -1553,13 +2158,26 @@ def upsert_hydration(conn: sqlite3.Connection, record: dict, cal_date: str = Non
     d = cal_date or record.get("calendarDate") or record.get("date")
     if not d:
         return
+    # sweatLossInML / activityIntakeInML may be absent depending on endpoint variant.
+    # COALESCE preserves values once written without requiring a full re-sync.
+    conn.execute("INSERT OR IGNORE INTO hydration (calendar_date) VALUES (?)", (d,))
     conn.execute(
-        "INSERT OR REPLACE INTO hydration (calendar_date, goal_ml, intake_ml, raw_json) VALUES (?, ?, ?, ?)",
+        """
+        UPDATE hydration SET
+            goal_ml             = ?,
+            intake_ml           = ?,
+            sweat_loss_ml       = COALESCE(?, sweat_loss_ml),
+            activity_intake_ml  = COALESCE(?, activity_intake_ml),
+            raw_json            = ?
+        WHERE calendar_date = ?
+        """,
         (
-            d,
             record.get("goalInML") or record.get("baseGoalInML"),
             record.get("intakeInML") or record.get("valueInML"),
+            record.get("sweatLossInML"),
+            record.get("activityIntakeInML"),
             json.dumps(record),
+            d,
         ),
     )
 
@@ -1569,12 +2187,13 @@ def upsert_fitness_age(conn: sqlite3.Connection, record: dict, cal_date: str = N
     if not d:
         return
     conn.execute(
-        "INSERT OR REPLACE INTO fitness_age (calendar_date, chronological_age, fitness_age, raw_json) "
-        "VALUES (?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO fitness_age (calendar_date, chronological_age, fitness_age, achievable_fitness_age, raw_json) "
+        "VALUES (?, ?, ?, ?, ?)",
         (
             d,
             record.get("chronologicalAge"),
             record.get("fitnessAge"),
+            record.get("achievableFitnessAge"),
             json.dumps(record),
         ),
     )
@@ -1624,8 +2243,9 @@ def upsert_weight(conn: sqlite3.Connection, record: dict, cal_date: str = None) 
 
     conn.execute(
         """INSERT OR REPLACE INTO weight
-           (timestamp, calendar_date, weight, bmi, body_fat, body_water, bone_mass, muscle_mass, source, raw_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (timestamp, calendar_date, weight, bmi, body_fat, body_water, bone_mass, muscle_mass,
+            metabolic_age, physique_rating, visceral_fat, source, raw_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             actual_ts,
             d,
@@ -1635,6 +2255,9 @@ def upsert_weight(conn: sqlite3.Connection, record: dict, cal_date: str = None) 
             record.get("bodyWater"),
             record.get("boneMass"),
             record.get("muscleMass"),
+            record.get("metabolicAge"),
+            record.get("physiqueRating"),
+            record.get("visceralFat"),
             source,
             json.dumps(record),
         ),
@@ -1700,16 +2323,20 @@ def upsert_endurance_score(conn: sqlite3.Connection, record: dict, cal_date: str
     d = cal_date or record.get("calendarDate") or record.get("date")
     if not d:
         return
+    contributors = record.get("contributors")
     conn.execute(
         """INSERT OR REPLACE INTO endurance_score
-           (calendar_date, overall_score, classification, vo2_max, vo2_max_precise, raw_json)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+           (calendar_date, overall_score, classification, vo2_max, vo2_max_precise,
+            feedback_phrase, contributors, raw_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             d,
             record.get("overallScore"),
             record.get("classification"),
             record.get("vo2Max"),
             record.get("vo2MaxPreciseValue"),
+            record.get("feedbackPhrase"),
+            json.dumps(contributors) if contributors is not None else None,
             json.dumps(record),
         ),
     )
@@ -1721,13 +2348,17 @@ def upsert_hill_score(conn: sqlite3.Connection, record: dict, cal_date: str = No
         return
     conn.execute(
         """INSERT OR REPLACE INTO hill_score
-           (calendar_date, overall_score, endurance_score, strength_score, raw_json)
-           VALUES (?, ?, ?, ?, ?)""",
+           (calendar_date, overall_score, endurance_score, strength_score,
+            vo2_max, vo2_max_precise, feedback_phrase_id, raw_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             d,
             record.get("overallScore"),
             record.get("enduranceScore"),
             record.get("strengthScore"),
+            record.get("vo2Max"),
+            record.get("vo2MaxPreciseValue"),
+            record.get("hillScoreFeedbackPhraseId"),
             json.dumps(record),
         ),
     )
@@ -1762,8 +2393,16 @@ def upsert_activity_splits(conn: sqlite3.Connection, activity_id: int, data) -> 
             """INSERT OR REPLACE INTO activity_splits
                (activity_id, split_number, distance_meters, duration_seconds,
                 average_speed, average_hr, max_hr, elevation_gain, elevation_loss,
-                avg_cadence, raw_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                avg_cadence, avg_swim_cadence, avg_swolf, total_strokes,
+                swim_stroke, num_active_lengths,
+                normalized_power, avg_respiration_rate, max_respiration_rate,
+                start_latitude, start_longitude, end_latitude, end_longitude,
+                start_time_gmt, calories,
+                left_pedal_smoothness, right_pedal_smoothness,
+                left_torque_effectiveness, right_torque_effectiveness,
+                surface_unpaved_pct, raw_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 activity_id,
                 i + 1,
@@ -1775,6 +2414,25 @@ def upsert_activity_splits(conn: sqlite3.Connection, activity_id: int, data) -> 
                 split.get("elevationGain"),
                 split.get("elevationLoss"),
                 split.get("averageRunCadence") or split.get("averageBikeCadence"),
+                split.get("averageSwimCadence") or None,
+                split.get("averageSWOLF") or None,
+                split.get("totalNumberOfStrokes") or None,
+                split.get("swimStroke"),
+                split.get("numberOfActiveLengths") or None,
+                split.get("normalizedPower"),
+                split.get("avgRespirationRate"),
+                split.get("maxRespirationRate"),
+                split.get("startLatitude"),
+                split.get("startLongitude"),
+                split.get("endLatitude"),
+                split.get("endLongitude"),
+                split.get("startTimeGMT"),
+                split.get("calories"),
+                split.get("leftPedalSmoothness"),
+                split.get("rightPedalSmoothness"),
+                split.get("leftTorqueEffectiveness"),
+                split.get("rightTorqueEffectiveness"),
+                split.get("surfaceTypeUnpavedPercentage"),
                 json.dumps(split),
             ),
         )
@@ -1908,8 +2566,22 @@ def upsert_daily_movement(conn, record, cal_date=None):
 
 def upsert_wellness_activity(conn, record, cal_date=None):
     d = cal_date or record.get("calendarDate") or record.get("date")
-    if d:
-        _upsert_raw_only(conn, "wellness_activity", "calendar_date", record, d)
+    if not d:
+        return
+    conn.execute(
+        """INSERT OR REPLACE INTO wellness_activity
+           (calendar_date, activity_name, wellness_activity_type,
+            start_timestamp_local, end_timestamp_local, raw_json)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            d,
+            record.get("activityName"),
+            record.get("wellnessActivityType"),
+            record.get("startTimestampLocal"),
+            record.get("endTimestampLocal"),
+            json.dumps(record),
+        ),
+    )
 
 
 def upsert_training_status(conn, record, cal_date=None):
@@ -1967,8 +2639,27 @@ def upsert_health_status(conn, record, cal_date=None):
 
 def upsert_daily_events(conn, record, cal_date=None):
     d = cal_date or record.get("calendarDate") or record.get("date")
-    if d:
-        _upsert_raw_only(conn, "daily_events", "calendar_date", record, d)
+    if not d:
+        return
+    # record may be a list of event objects; use the first non-rest event for scalars
+    events = record if isinstance(record, list) else [record]
+    primary = next((e for e in events if e.get("activityType")), events[0] if events else {})
+    conn.execute(
+        """INSERT OR REPLACE INTO daily_events
+           (calendar_date, activity_type, activity_sub_type,
+            start_timestamp_local, end_timestamp_local, duration_seconds, device_id, raw_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            d,
+            primary.get("activityType"),
+            primary.get("activitySubType"),
+            primary.get("startTimestampLocal"),
+            primary.get("endTimestampLocal"),
+            primary.get("duration"),
+            primary.get("deviceId"),
+            json.dumps(record),
+        ),
+    )
 
 
 def upsert_activity_trends(conn, record, activity_type="all", cal_date=None):
@@ -1988,8 +2679,22 @@ def upsert_sleep_stats(conn, record):
 
 def upsert_health_snapshot(conn, record):
     d = record.get("calendarDate") or record.get("date")
-    if d:
-        _upsert_raw_only(conn, "health_snapshot", "calendar_date", record, d)
+    if not d:
+        return
+    conn.execute(
+        """INSERT OR REPLACE INTO health_snapshot
+           (calendar_date, activity_name, wellness_activity_type,
+            start_timestamp_local, end_timestamp_local, raw_json)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            d,
+            record.get("activityName"),
+            record.get("wellnessActivityType"),
+            record.get("startTimestampLocal"),
+            record.get("endTimestampLocal"),
+            json.dumps(record),
+        ),
+    )
 
 
 def upsert_workout_schedule(conn, record):
@@ -2066,15 +2771,22 @@ def upsert_gear(conn, record):
         return
     conn.execute(
         """INSERT OR REPLACE INTO gear
-           (gear_id, gear_type, display_name, brand, model, date_begin, raw_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+           (gear_id, gear_type, display_name, brand, model, date_begin,
+            distance_used_meters, duration_used_seconds, days_used,
+            status, max_usage_distance_meters, raw_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             str(g_id),
-            record.get("gearTypeName"),
-            record.get("displayName"),
-            record.get("customMakeModel") or record.get("brandName"),
-            record.get("modelName"),
-            record.get("dateBegin"),
+            record.get("gearTypeName") or record.get("gearType"),
+            record.get("displayName") or record.get("name"),
+            record.get("customMakeModel") or record.get("brandName") or record.get("brand"),
+            record.get("modelName") or record.get("model"),
+            record.get("dateBegin") or record.get("firstUseDate"),
+            record.get("distanceUsedMeters"),
+            record.get("durationUsedSeconds"),
+            record.get("daysUsed"),
+            record.get("status"),
+            record.get("maxUsageDistanceMeters"),
             json.dumps(record),
         ),
     )
