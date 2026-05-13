@@ -61,6 +61,7 @@ from garmin_mcp.db import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _cols(conn, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
 
@@ -71,15 +72,19 @@ def _row(conn, table: str, pk_col: str, pk_val) -> dict:
 
 
 def _splits(conn, activity_id: int) -> list[dict]:
-    return [dict(r) for r in conn.execute(
-        "SELECT * FROM activity_splits WHERE activity_id = ? ORDER BY split_number",
-        (activity_id,),
-    )]
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM activity_splits WHERE activity_id = ? ORDER BY split_number",
+            (activity_id,),
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
 # Schema: new columns must exist after init_db
 # ---------------------------------------------------------------------------
+
 
 class TestSchemaNewColumns:
     def test_activity_splits_swim_columns(self, temp_db):
@@ -90,19 +95,31 @@ class TestSchemaNewColumns:
     def test_activity_splits_performance_columns(self, temp_db):
         cols = _cols(temp_db, "activity_splits")
         for col in (
-            "normalized_power", "avg_respiration_rate", "max_respiration_rate",
-            "start_latitude", "start_longitude", "end_latitude", "end_longitude",
-            "start_time_gmt", "calories",
-            "left_pedal_smoothness", "right_pedal_smoothness",
-            "left_torque_effectiveness", "right_torque_effectiveness",
+            "normalized_power",
+            "avg_respiration_rate",
+            "max_respiration_rate",
+            "start_latitude",
+            "start_longitude",
+            "end_latitude",
+            "end_longitude",
+            "start_time_gmt",
+            "calories",
+            "left_pedal_smoothness",
+            "right_pedal_smoothness",
+            "left_torque_effectiveness",
+            "right_torque_effectiveness",
             "surface_unpaved_pct",
         ):
             assert col in cols, f"Missing: {col}"
 
     def test_sleep_new_columns(self, temp_db):
         cols = _cols(temp_db, "sleep")
-        for col in ("body_battery_change", "resting_heart_rate",
-                    "avg_skin_temp_deviation_c", "avg_skin_temp_deviation_f"):
+        for col in (
+            "body_battery_change",
+            "resting_heart_rate",
+            "avg_skin_temp_deviation_c",
+            "avg_skin_temp_deviation_f",
+        ):
             assert col in cols, f"Missing: {col}"
 
     def test_heart_rate_new_column(self, temp_db):
@@ -145,27 +162,31 @@ class TestSchemaNewColumns:
 
     def test_daily_events_columns(self, temp_db):
         cols = _cols(temp_db, "daily_events")
-        for col in ("activity_type", "activity_sub_type",
-                    "start_timestamp_local", "end_timestamp_local",
-                    "duration_seconds", "device_id"):
+        for col in (
+            "activity_type",
+            "activity_sub_type",
+            "start_timestamp_local",
+            "end_timestamp_local",
+            "duration_seconds",
+            "device_id",
+        ):
             assert col in cols, f"Missing: {col}"
 
     def test_wellness_activity_columns(self, temp_db):
         cols = _cols(temp_db, "wellness_activity")
-        for col in ("activity_name", "wellness_activity_type",
-                    "start_timestamp_local", "end_timestamp_local"):
+        for col in ("activity_name", "wellness_activity_type", "start_timestamp_local", "end_timestamp_local"):
             assert col in cols, f"Missing: {col}"
 
     def test_health_snapshot_columns(self, temp_db):
         cols = _cols(temp_db, "health_snapshot")
-        for col in ("activity_name", "wellness_activity_type",
-                    "start_timestamp_local", "end_timestamp_local"):
+        for col in ("activity_name", "wellness_activity_type", "start_timestamp_local", "end_timestamp_local"):
             assert col in cols, f"Missing: {col}"
 
 
 # ---------------------------------------------------------------------------
 # activity_splits — swim fields
 # ---------------------------------------------------------------------------
+
 
 class TestActivitySplitsSwim:
     _POOL_LAP = {
@@ -191,9 +212,15 @@ class TestActivitySplitsSwim:
         assert row["num_active_lengths"] == 10
 
     def test_zero_swim_values_stored_as_null(self, temp_db):
-        rest_lap = dict(self._POOL_LAP, averageSwimCadence=0, averageSWOLF=0,
-                        totalNumberOfStrokes=0, swimStroke=None, numberOfActiveLengths=0,
-                        distance=0)
+        rest_lap = dict(
+            self._POOL_LAP,
+            averageSwimCadence=0,
+            averageSWOLF=0,
+            totalNumberOfStrokes=0,
+            swimStroke=None,
+            numberOfActiveLengths=0,
+            distance=0,
+        )
         upsert_activity_splits(temp_db, 222, [rest_lap])
         row = _splits(temp_db, 222)[0]
         assert row["avg_swim_cadence"] is None
@@ -203,8 +230,11 @@ class TestActivitySplitsSwim:
 
     def test_non_swim_lap_leaves_swim_fields_null(self, temp_db):
         run_lap = {
-            "distance": 1000, "duration": 300, "averageHR": 155,
-            "averageRunCadence": 170, "elevationGain": 10,
+            "distance": 1000,
+            "duration": 300,
+            "averageHR": 155,
+            "averageRunCadence": 170,
+            "elevationGain": 10,
         }
         upsert_activity_splits(temp_db, 333, [run_lap])
         row = _splits(temp_db, 333)[0]
@@ -216,6 +246,7 @@ class TestActivitySplitsSwim:
 # ---------------------------------------------------------------------------
 # activity_splits — performance fields
 # ---------------------------------------------------------------------------
+
 
 class TestActivitySplitsPerformance:
     _CYCLING_LAP = {
@@ -285,6 +316,7 @@ class TestActivitySplitsPerformance:
 # sleep
 # ---------------------------------------------------------------------------
 
+
 class TestSleepNewColumns:
     _RECORD = {
         "dailySleepDTO": {
@@ -309,10 +341,12 @@ class TestSleepNewColumns:
         assert row["avg_skin_temp_deviation_f"] == pytest.approx(-0.54, abs=0.01)
 
     def test_missing_new_fields_stored_as_null(self, temp_db):
-        record = {"dailySleepDTO": {
-            "calendarDate": "2026-05-09",
-            "sleepTimeSeconds": 25200,
-        }}
+        record = {
+            "dailySleepDTO": {
+                "calendarDate": "2026-05-09",
+                "sleepTimeSeconds": 25200,
+            }
+        }
         upsert_sleep(temp_db, record)
         row = _row(temp_db, "sleep", "calendar_date", "2026-05-09")
         assert row["body_battery_change"] is None
@@ -381,40 +415,53 @@ class TestSleepNewColumns:
 # heart_rate
 # ---------------------------------------------------------------------------
 
+
 class TestHeartRateNewColumn:
     def test_7day_avg_stored(self, temp_db):
-        upsert_heart_rate(temp_db, {
-            "calendarDate": "2026-05-10",
-            "restingHeartRate": 54,
-            "minHeartRate": 48,
-            "maxHeartRate": 168,
-            "lastSevenDaysAvgRestingHeartRate": 56.3,
-        })
+        upsert_heart_rate(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "restingHeartRate": 54,
+                "minHeartRate": 48,
+                "maxHeartRate": 168,
+                "lastSevenDaysAvgRestingHeartRate": 56.3,
+            },
+        )
         row = _row(temp_db, "heart_rate", "calendar_date", "2026-05-10")
         assert row["last_7day_avg_resting"] == pytest.approx(56.3, abs=0.1)
 
     def test_missing_7day_avg_is_null(self, temp_db):
-        upsert_heart_rate(temp_db, {
-            "calendarDate": "2026-05-09",
-            "restingHeartRate": 55,
-        })
+        upsert_heart_rate(
+            temp_db,
+            {
+                "calendarDate": "2026-05-09",
+                "restingHeartRate": 55,
+            },
+        )
         row = _row(temp_db, "heart_rate", "calendar_date", "2026-05-09")
         assert row["last_7day_avg_resting"] is None
         assert row["resting_hr"] == 55
 
     def test_rest_then_gql_preserves_7day_avg(self, temp_db):
         """REST record sets 7-day avg; GQL detail overwrites (no such field) — value must survive."""
-        upsert_heart_rate(temp_db, {
-            "calendarDate": "2026-05-10",
-            "restingHeartRate": 58,
-            "lastSevenDaysAvgRestingHeartRate": 59,
-        })
+        upsert_heart_rate(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "restingHeartRate": 58,
+                "lastSevenDaysAvgRestingHeartRate": 59,
+            },
+        )
         # GQL heart_rate_detail record has no lastSevenDaysAvgRestingHeartRate
-        upsert_heart_rate(temp_db, {
-            "calendarDate": "2026-05-10",
-            "restingHeartRate": 58,
-            "maxHeartRate": 160,
-        })
+        upsert_heart_rate(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "restingHeartRate": 58,
+                "maxHeartRate": 160,
+            },
+        )
         row = _row(temp_db, "heart_rate", "calendar_date", "2026-05-10")
         assert row["last_7day_avg_resting"] == pytest.approx(59, abs=0.1)
         assert row["max_hr"] == 160
@@ -422,11 +469,14 @@ class TestHeartRateNewColumn:
     def test_gql_then_rest_populates_7day_avg(self, temp_db):
         """GQL writes first (no 7-day field), then REST fills it in."""
         upsert_heart_rate(temp_db, {"calendarDate": "2026-05-10", "restingHeartRate": 58})
-        upsert_heart_rate(temp_db, {
-            "calendarDate": "2026-05-10",
-            "restingHeartRate": 58,
-            "lastSevenDaysAvgRestingHeartRate": 59,
-        })
+        upsert_heart_rate(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "restingHeartRate": 58,
+                "lastSevenDaysAvgRestingHeartRate": 59,
+            },
+        )
         row = _row(temp_db, "heart_rate", "calendar_date", "2026-05-10")
         assert row["last_7day_avg_resting"] == pytest.approx(59, abs=0.1)
 
@@ -435,15 +485,19 @@ class TestHeartRateNewColumn:
 # spo2
 # ---------------------------------------------------------------------------
 
+
 class TestSpo2NewColumns:
     def test_spo2_events_stored(self, temp_db):
-        upsert_spo2(temp_db, {
-            "calendarDate": "2026-05-10",
-            "averageSpO2": 96.0,
-            "lowestSpO2": 88.0,
-            "numberOfEventsBelowThreshold": 3,
-            "durationOfEventsBelowThreshold": 420.0,
-        })
+        upsert_spo2(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "averageSpO2": 96.0,
+                "lowestSpO2": 88.0,
+                "numberOfEventsBelowThreshold": 3,
+                "durationOfEventsBelowThreshold": 420.0,
+            },
+        )
         row = _row(temp_db, "spo2", "calendar_date", "2026-05-10")
         assert row["events_below_threshold"] == 3
         assert row["duration_below_threshold_secs"] == pytest.approx(420.0)
@@ -459,50 +513,66 @@ class TestSpo2NewColumns:
 # respiration
 # ---------------------------------------------------------------------------
 
+
 class TestRespirationNewColumn:
     def test_avg_sleep_respiration_stored(self, temp_db):
-        upsert_respiration(temp_db, {
-            "calendarDate": "2026-05-10",
-            "avgWakingRespirationValue": 16.2,
-            "avgSleepRespirationValue": 14.8,
-            "lowestRespirationValue": 13.0,
-            "highestRespirationValue": 22.0,
-        })
+        upsert_respiration(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "avgWakingRespirationValue": 16.2,
+                "avgSleepRespirationValue": 14.8,
+                "lowestRespirationValue": 13.0,
+                "highestRespirationValue": 22.0,
+            },
+        )
         row = _row(temp_db, "respiration", "calendar_date", "2026-05-10")
         assert row["avg_waking"] == pytest.approx(16.2, abs=0.1)
         assert row["avg_sleep"] == pytest.approx(14.8, abs=0.1)
 
     def test_missing_sleep_respiration_is_null(self, temp_db):
-        upsert_respiration(temp_db, {
-            "calendarDate": "2026-05-09",
-            "avgWakingRespirationValue": 15.0,
-        })
+        upsert_respiration(
+            temp_db,
+            {
+                "calendarDate": "2026-05-09",
+                "avgWakingRespirationValue": 15.0,
+            },
+        )
         row = _row(temp_db, "respiration", "calendar_date", "2026-05-09")
         assert row["avg_sleep"] is None
 
     def test_sleep_respiration_preserved_on_overwrite(self, temp_db):
         """First write has sleep respiration; second write lacks it — value must survive."""
-        upsert_respiration(temp_db, {
-            "calendarDate": "2026-05-10",
-            "avgWakingRespirationValue": 16.0,
-            "avgSleepRespirationValue": 14.5,
-        })
-        upsert_respiration(temp_db, {
-            "calendarDate": "2026-05-10",
-            "avgWakingRespirationValue": 16.0,
-            # no avgSleepRespirationValue (e.g. same-day sync before sleep data is ready)
-        })
+        upsert_respiration(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "avgWakingRespirationValue": 16.0,
+                "avgSleepRespirationValue": 14.5,
+            },
+        )
+        upsert_respiration(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "avgWakingRespirationValue": 16.0,
+                # no avgSleepRespirationValue (e.g. same-day sync before sleep data is ready)
+            },
+        )
         row = _row(temp_db, "respiration", "calendar_date", "2026-05-10")
         assert row["avg_sleep"] == pytest.approx(14.5, abs=0.1)
 
     def test_sleep_respiration_filled_on_later_write(self, temp_db):
         """First write has no sleep value; later write fills it in."""
         upsert_respiration(temp_db, {"calendarDate": "2026-05-10", "avgWakingRespirationValue": 16.0})
-        upsert_respiration(temp_db, {
-            "calendarDate": "2026-05-10",
-            "avgWakingRespirationValue": 16.0,
-            "avgSleepRespirationValue": 14.5,
-        })
+        upsert_respiration(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "avgWakingRespirationValue": 16.0,
+                "avgSleepRespirationValue": 14.5,
+            },
+        )
         row = _row(temp_db, "respiration", "calendar_date", "2026-05-10")
         assert row["avg_sleep"] == pytest.approx(14.5, abs=0.1)
 
@@ -511,15 +581,19 @@ class TestRespirationNewColumn:
 # hydration
 # ---------------------------------------------------------------------------
 
+
 class TestHydrationNewColumns:
     def test_sweat_loss_and_activity_intake_stored(self, temp_db):
-        upsert_hydration(temp_db, {
-            "calendarDate": "2026-05-10",
-            "goalInML": 2500,
-            "valueInML": 2100,
-            "sweatLossInML": 620,
-            "activityIntakeInML": 400,
-        })
+        upsert_hydration(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "goalInML": 2500,
+                "valueInML": 2100,
+                "sweatLossInML": 620,
+                "activityIntakeInML": 400,
+            },
+        )
         row = _row(temp_db, "hydration", "calendar_date", "2026-05-10")
         assert row["sweat_loss_ml"] == pytest.approx(620)
         assert row["activity_intake_ml"] == pytest.approx(400)
@@ -532,13 +606,16 @@ class TestHydrationNewColumns:
 
     def test_sweat_loss_preserved_on_overwrite(self, temp_db):
         """First write has sweat/activity data; second write lacks them — values must survive."""
-        upsert_hydration(temp_db, {
-            "calendarDate": "2026-05-10",
-            "goalInML": 2500,
-            "valueInML": 2100,
-            "sweatLossInML": 1200,
-            "activityIntakeInML": 350,
-        })
+        upsert_hydration(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "goalInML": 2500,
+                "valueInML": 2100,
+                "sweatLossInML": 1200,
+                "activityIntakeInML": 350,
+            },
+        )
         upsert_hydration(temp_db, {"calendarDate": "2026-05-10", "goalInML": 2500, "valueInML": 2100})
         row = _row(temp_db, "hydration", "calendar_date", "2026-05-10")
         assert row["sweat_loss_ml"] == pytest.approx(1200)
@@ -546,13 +623,16 @@ class TestHydrationNewColumns:
 
     def test_zero_activity_intake_stored_not_null(self, temp_db):
         """activityIntakeInML == 0 is valid (no activity fluids), must not become NULL."""
-        upsert_hydration(temp_db, {
-            "calendarDate": "2026-05-10",
-            "goalInML": 2500,
-            "valueInML": 0,
-            "sweatLossInML": 500,
-            "activityIntakeInML": 0,
-        })
+        upsert_hydration(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "goalInML": 2500,
+                "valueInML": 0,
+                "sweatLossInML": 500,
+                "activityIntakeInML": 0,
+            },
+        )
         row = _row(temp_db, "hydration", "calendar_date", "2026-05-10")
         assert row["activity_intake_ml"] == 0.0
 
@@ -561,26 +641,33 @@ class TestHydrationNewColumns:
 # weight
 # ---------------------------------------------------------------------------
 
+
 class TestWeightNewColumns:
     def test_metabolic_age_and_physique_rating_stored(self, temp_db):
-        upsert_weight(temp_db, {
-            "calendarDate": "2026-05-10",
-            "date": 1746835200000,
-            "weight": 77000,
-            "bmi": 25.7,
-            "metabolicAge": 38.0,
-            "physiqueRating": 4,
-        })
+        upsert_weight(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "date": 1746835200000,
+                "weight": 77000,
+                "bmi": 25.7,
+                "metabolicAge": 38.0,
+                "physiqueRating": 4,
+            },
+        )
         row = _row(temp_db, "weight", "calendar_date", "2026-05-10")
         assert row["metabolic_age"] == pytest.approx(38.0)
         assert row["physique_rating"] == 4
 
     def test_missing_body_comp_fields_are_null(self, temp_db):
-        upsert_weight(temp_db, {
-            "calendarDate": "2026-05-09",
-            "date": 1746748800000,
-            "weight": 77500,
-        })
+        upsert_weight(
+            temp_db,
+            {
+                "calendarDate": "2026-05-09",
+                "date": 1746748800000,
+                "weight": 77500,
+            },
+        )
         row = _row(temp_db, "weight", "calendar_date", "2026-05-09")
         assert row["metabolic_age"] is None
         assert row["physique_rating"] is None
@@ -591,6 +678,7 @@ class TestWeightNewColumns:
 # endurance_score
 # ---------------------------------------------------------------------------
 
+
 class TestEnduranceScoreNewColumns:
     _CONTRIBUTORS = [
         {"activityTypeId": None, "contribution": 83.93, "group": 0},
@@ -598,14 +686,17 @@ class TestEnduranceScoreNewColumns:
     ]
 
     def test_feedback_phrase_and_contributors_stored(self, temp_db):
-        upsert_endurance_score(temp_db, {
-            "calendarDate": "2026-05-10",
-            "overallScore": 5200,
-            "classification": "PRODUCTIVE",
-            "vo2Max": 46.0,
-            "feedbackPhrase": "ENDURANCE_SCORE_IMPROVING",
-            "contributors": self._CONTRIBUTORS,
-        })
+        upsert_endurance_score(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "overallScore": 5200,
+                "classification": "PRODUCTIVE",
+                "vo2Max": 46.0,
+                "feedbackPhrase": "ENDURANCE_SCORE_IMPROVING",
+                "contributors": self._CONTRIBUTORS,
+            },
+        )
         row = _row(temp_db, "endurance_score", "calendar_date", "2026-05-10")
         assert row["feedback_phrase"] == "ENDURANCE_SCORE_IMPROVING"
         parsed = json.loads(row["contributors"])
@@ -613,10 +704,13 @@ class TestEnduranceScoreNewColumns:
         assert parsed[0]["contribution"] == pytest.approx(83.93)
 
     def test_null_contributors_stored_as_null(self, temp_db):
-        upsert_endurance_score(temp_db, {
-            "calendarDate": "2026-05-09",
-            "overallScore": 5100,
-        })
+        upsert_endurance_score(
+            temp_db,
+            {
+                "calendarDate": "2026-05-09",
+                "overallScore": 5100,
+            },
+        )
         row = _row(temp_db, "endurance_score", "calendar_date", "2026-05-09")
         assert row["feedback_phrase"] is None
         assert row["contributors"] is None
@@ -626,30 +720,37 @@ class TestEnduranceScoreNewColumns:
 # hill_score
 # ---------------------------------------------------------------------------
 
+
 class TestHillScoreNewColumns:
     def test_vo2max_and_feedback_stored(self, temp_db):
-        upsert_hill_score(temp_db, {
-            "calendarDate": "2026-05-10",
-            "overallScore": 58,
-            "enduranceScore": 62,
-            "strengthScore": 54,
-            "vo2Max": 46.0,
-            "vo2MaxPreciseValue": 46.3,
-            "hillScoreFeedbackPhraseId": "HILL_SCORE_IMPROVING",
-        })
+        upsert_hill_score(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "overallScore": 58,
+                "enduranceScore": 62,
+                "strengthScore": 54,
+                "vo2Max": 46.0,
+                "vo2MaxPreciseValue": 46.3,
+                "hillScoreFeedbackPhraseId": "HILL_SCORE_IMPROVING",
+            },
+        )
         row = _row(temp_db, "hill_score", "calendar_date", "2026-05-10")
         assert row["vo2_max"] == pytest.approx(46.0)
         assert row["vo2_max_precise"] == pytest.approx(46.3)
         assert row["feedback_phrase_id"] == "HILL_SCORE_IMPROVING"
 
     def test_existing_hill_fields_unaffected(self, temp_db):
-        upsert_hill_score(temp_db, {
-            "calendarDate": "2026-05-09",
-            "overallScore": 55,
-            "enduranceScore": 58,
-            "strengthScore": 52,
-            "vo2Max": 45.5,
-        })
+        upsert_hill_score(
+            temp_db,
+            {
+                "calendarDate": "2026-05-09",
+                "overallScore": 55,
+                "enduranceScore": 58,
+                "strengthScore": 52,
+                "vo2Max": 45.5,
+            },
+        )
         row = _row(temp_db, "hill_score", "calendar_date", "2026-05-09")
         assert row["overall_score"] == 55
         assert row["endurance_score"] == 58
@@ -661,17 +762,21 @@ class TestHillScoreNewColumns:
 # gear
 # ---------------------------------------------------------------------------
 
+
 class TestGearNewColumns:
     def test_usage_stats_stored(self, temp_db):
-        upsert_gear(temp_db, {
-            "uuid": "abc-123",
-            "gearTypeName": "shoes",
-            "displayName": "Canyon CFSLX",
-            "distanceUsedMeters": 467282.78,
-            "durationUsedSeconds": 85673,
-            "daysUsed": 13,
-            "dateBegin": "2024-01-01",
-        })
+        upsert_gear(
+            temp_db,
+            {
+                "uuid": "abc-123",
+                "gearTypeName": "shoes",
+                "displayName": "Canyon CFSLX",
+                "distanceUsedMeters": 467282.78,
+                "durationUsedSeconds": 85673,
+                "daysUsed": 13,
+                "dateBegin": "2024-01-01",
+            },
+        )
         row = _row(temp_db, "gear", "gear_id", "abc-123")
         assert row["distance_used_meters"] == pytest.approx(467282.78, rel=1e-4)
         assert row["duration_used_seconds"] == 85673
@@ -689,16 +794,21 @@ class TestGearNewColumns:
 # Hollow tables: daily_events, wellness_activity, health_snapshot
 # ---------------------------------------------------------------------------
 
+
 class TestDailyEvents:
     def test_scalar_fields_extracted(self, temp_db):
-        upsert_daily_events(temp_db, {
-            "activityType": "RUNNING",
-            "activitySubType": "TRAIL_RUNNING",
-            "startTimestampLocal": "2026-05-10T07:00:00",
-            "endTimestampLocal": "2026-05-10T08:00:00",
-            "duration": 3600.0,
-            "deviceId": "device-42",
-        }, cal_date="2026-05-10")
+        upsert_daily_events(
+            temp_db,
+            {
+                "activityType": "RUNNING",
+                "activitySubType": "TRAIL_RUNNING",
+                "startTimestampLocal": "2026-05-10T07:00:00",
+                "endTimestampLocal": "2026-05-10T08:00:00",
+                "duration": 3600.0,
+                "deviceId": "device-42",
+            },
+            cal_date="2026-05-10",
+        )
         row = _row(temp_db, "daily_events", "calendar_date", "2026-05-10")
         assert row["activity_type"] == "RUNNING"
         assert row["activity_sub_type"] == "TRAIL_RUNNING"
@@ -727,12 +837,16 @@ class TestDailyEvents:
 
 class TestWellnessActivity:
     def test_scalar_fields_extracted(self, temp_db):
-        upsert_wellness_activity(temp_db, {
-            "activityName": "Morning Walk",
-            "wellnessActivityType": "WALKING",
-            "startTimestampLocal": "2026-05-10T06:30:00",
-            "endTimestampLocal": "2026-05-10T07:00:00",
-        }, cal_date="2026-05-10")
+        upsert_wellness_activity(
+            temp_db,
+            {
+                "activityName": "Morning Walk",
+                "wellnessActivityType": "WALKING",
+                "startTimestampLocal": "2026-05-10T06:30:00",
+                "endTimestampLocal": "2026-05-10T07:00:00",
+            },
+            cal_date="2026-05-10",
+        )
         row = _row(temp_db, "wellness_activity", "calendar_date", "2026-05-10")
         assert row["activity_name"] == "Morning Walk"
         assert row["wellness_activity_type"] == "WALKING"
@@ -748,13 +862,16 @@ class TestWellnessActivity:
 
 class TestHealthSnapshot:
     def test_scalar_fields_extracted(self, temp_db):
-        upsert_health_snapshot(temp_db, {
-            "calendarDate": "2026-05-10",
-            "activityName": "Health Snapshot",
-            "wellnessActivityType": "HEALTH_SNAPSHOT",
-            "startTimestampLocal": "2026-05-10T08:00:00",
-            "endTimestampLocal": "2026-05-10T08:02:00",
-        })
+        upsert_health_snapshot(
+            temp_db,
+            {
+                "calendarDate": "2026-05-10",
+                "activityName": "Health Snapshot",
+                "wellnessActivityType": "HEALTH_SNAPSHOT",
+                "startTimestampLocal": "2026-05-10T08:00:00",
+                "endTimestampLocal": "2026-05-10T08:02:00",
+            },
+        )
         row = _row(temp_db, "health_snapshot", "calendar_date", "2026-05-10")
         assert row["activity_name"] == "Health Snapshot"
         assert row["wellness_activity_type"] == "HEALTH_SNAPSHOT"
@@ -770,6 +887,7 @@ class TestHealthSnapshot:
 # Migration: _add_columns / _backfill_from_raw
 # ---------------------------------------------------------------------------
 
+
 class TestAddColumns:
     def test_adds_missing_column(self, temp_db):
         _add_columns(temp_db, "sleep", [("test_col_xyzzy", "REAL")])
@@ -781,10 +899,14 @@ class TestAddColumns:
         assert "resting_heart_rate" in _cols(temp_db, "sleep")
 
     def test_returns_only_added_columns(self, temp_db):
-        added = _add_columns(temp_db, "sleep", [
-            ("resting_heart_rate", "INTEGER"),   # already exists
-            ("test_brand_new_col", "TEXT"),       # new
-        ])
+        added = _add_columns(
+            temp_db,
+            "sleep",
+            [
+                ("resting_heart_rate", "INTEGER"),  # already exists
+                ("test_brand_new_col", "TEXT"),  # new
+            ],
+        )
         assert added == ["test_brand_new_col"]
 
 
@@ -951,9 +1073,7 @@ class TestMigrationFunctions:
             );
         """)
         migrate_activity_splits_v2(conn)
-        row = dict(conn.execute(
-            "SELECT * FROM activity_splits WHERE activity_id = 1001"
-        ).fetchone())
+        row = dict(conn.execute("SELECT * FROM activity_splits WHERE activity_id = 1001").fetchone())
         assert row["normalized_power"] == 230
         assert row["avg_respiration_rate"] == pytest.approx(33.5, abs=0.1)
         assert row["start_latitude"] == pytest.approx(49.46, abs=0.01)
@@ -981,9 +1101,7 @@ class TestMigrationFunctions:
         de_cols = _cols(conn, "daily_events")
         assert "activity_type" in de_cols
         assert "start_timestamp_local" in de_cols
-        wa = dict(conn.execute(
-            "SELECT * FROM wellness_activity WHERE calendar_date = '2026-05-10'"
-        ).fetchone())
+        wa = dict(conn.execute("SELECT * FROM wellness_activity WHERE calendar_date = '2026-05-10'").fetchone())
         assert wa["activity_name"] == "Walk"
         assert wa["wellness_activity_type"] == "WALKING"
         conn.close()
@@ -1002,9 +1120,7 @@ class TestMigrationFunctions:
             );
         """)
         migrate_endurance_score_table(conn)
-        row = dict(conn.execute(
-            "SELECT * FROM endurance_score WHERE calendar_date = '2026-05-10'"
-        ).fetchone())
+        row = dict(conn.execute("SELECT * FROM endurance_score WHERE calendar_date = '2026-05-10'").fetchone())
         assert row["feedback_phrase"] == "PRODUCTIVE"
         parsed = json.loads(row["contributors"])
         assert len(parsed) == 2
@@ -1015,6 +1131,7 @@ class TestMigrationFunctions:
 # New v2/v3 migrations: sleep_v2 (RENAME COLUMN + nested backfill), activity,
 # fitness_age, weight_v3, gear_v2
 # ---------------------------------------------------------------------------
+
 
 class TestSleepMigrationV2:
     """RENAME COLUMN + nested json_extract backfill from dailySleepDTO."""
@@ -1073,9 +1190,7 @@ class TestSleepMigrationV2:
     def test_backfill_from_nested_raw_json(self):
         conn = self._old_db_with_rename_candidates()
         migrate_sleep_table_v2(conn)
-        row = dict(conn.execute(
-            "SELECT * FROM sleep WHERE calendar_date = '2026-05-10'"
-        ).fetchone())
+        row = dict(conn.execute("SELECT * FROM sleep WHERE calendar_date = '2026-05-10'").fetchone())
         assert row["sleep_need_minutes"] == 540
         assert row["highest_spo2"] == pytest.approx(99.0)
         assert row["sleep_score_overall"] == 87
@@ -1138,17 +1253,20 @@ class TestActivityMigration:
         conn = self._old_activity_db()
         migrate_activity_table(conn)
         cols = _cols(conn, "activity")
-        for c in ("body_battery_change", "total_work_kcal",
-                  "avg_grade_adjusted_speed", "activity_steps", "activity_min_hr"):
+        for c in (
+            "body_battery_change",
+            "total_work_kcal",
+            "avg_grade_adjusted_speed",
+            "activity_steps",
+            "activity_min_hr",
+        ):
             assert c in cols, f"Missing: {c}"
         conn.close()
 
     def test_backfill_from_summary_dto(self):
         conn = self._old_activity_db()
         migrate_activity_table(conn)
-        row = dict(conn.execute(
-            "SELECT * FROM activity WHERE activity_id = 9001"
-        ).fetchone())
+        row = dict(conn.execute("SELECT * FROM activity WHERE activity_id = 9001").fetchone())
         assert row["body_battery_change"] == -25
         assert row["total_work_kcal"] == pytest.approx(850.5)
         assert row["avg_grade_adjusted_speed"] == pytest.approx(3.42, abs=0.01)
@@ -1201,9 +1319,7 @@ class TestFitnessAgeMigration:
         )
         conn.commit()
         migrate_fitness_age_table(conn)
-        row = dict(conn.execute(
-            "SELECT * FROM fitness_age WHERE calendar_date = '2026-05-10'"
-        ).fetchone())
+        row = dict(conn.execute("SELECT * FROM fitness_age WHERE calendar_date = '2026-05-10'").fetchone())
         assert row["achievable_fitness_age"] == pytest.approx(35.0)
         conn.close()
 
@@ -1229,9 +1345,7 @@ class TestWeightMigrationV3:
         )
         conn.commit()
         migrate_weight_table_v3(conn)
-        row = dict(conn.execute(
-            "SELECT * FROM weight WHERE timestamp = 1746835200000"
-        ).fetchone())
+        row = dict(conn.execute("SELECT * FROM weight WHERE timestamp = 1746835200000").fetchone())
         assert row["visceral_fat"] == pytest.approx(7.5)
         conn.close()
 
@@ -1255,14 +1369,11 @@ class TestGearMigrationV2:
         """)
         conn.execute(
             "INSERT INTO gear VALUES (?, ?, ?)",
-            ("uuid-7", "Canyon",
-             json.dumps({"status": "active", "maxUsageDistanceMeters": 1500000.0})),
+            ("uuid-7", "Canyon", json.dumps({"status": "active", "maxUsageDistanceMeters": 1500000.0})),
         )
         conn.commit()
         migrate_gear_table_v2(conn)
-        row = dict(conn.execute(
-            "SELECT * FROM gear WHERE gear_id = 'uuid-7'"
-        ).fetchone())
+        row = dict(conn.execute("SELECT * FROM gear WHERE gear_id = 'uuid-7'").fetchone())
         assert row["status"] == "active"
         assert row["max_usage_distance_meters"] == pytest.approx(1500000.0)
         conn.close()
@@ -1271,6 +1382,7 @@ class TestGearMigrationV2:
 # ---------------------------------------------------------------------------
 # End-to-end: full upgrade from old schema + idempotency of init_db itself
 # ---------------------------------------------------------------------------
+
 
 class TestFullUpgradePath:
     """Simulate a user upgrading from pre-PR DB by running init_db on it."""
@@ -1297,17 +1409,19 @@ class TestFullUpgradePath:
                 raw_json TEXT
             );
         """)
-        raw = json.dumps({
-            "dailySleepDTO": {
-                "calendarDate": "2026-05-10",
-                "sleepTimeSeconds": 28000,
-                "sleepNeed": {"actual": 540},
-                "sleepScores": {
-                    "overall": {"value": 85},
-                    "lightPercentage": {"value": 50},
-                },
+        raw = json.dumps(
+            {
+                "dailySleepDTO": {
+                    "calendarDate": "2026-05-10",
+                    "sleepTimeSeconds": 28000,
+                    "sleepNeed": {"actual": 540},
+                    "sleepScores": {
+                        "overall": {"value": 85},
+                        "lightPercentage": {"value": 50},
+                    },
+                }
             }
-        })
+        )
         conn.execute(
             "INSERT INTO sleep VALUES (?, ?, ?, ?, ?)",
             ("2026-05-10", 28000, None, None, raw),
@@ -1322,9 +1436,7 @@ class TestFullUpgradePath:
         assert "sleep_need_seconds" not in cols
         assert "sleep_score_composition" not in cols
 
-        row = dict(conn.execute(
-            "SELECT * FROM sleep WHERE calendar_date = '2026-05-10'"
-        ).fetchone())
+        row = dict(conn.execute("SELECT * FROM sleep WHERE calendar_date = '2026-05-10'").fetchone())
         assert row["sleep_need_minutes"] == 540
         assert row["sleep_light_pct"] == 50
         assert row["sleep_score_overall"] == 85
@@ -1344,17 +1456,14 @@ class TestFullUpgradePath:
         """)
         conn.execute(
             "INSERT INTO sleep VALUES (?, ?, ?, ?)",
-            ("2026-05-10", 28000, None,
-             json.dumps({"dailySleepDTO": {"sleepNeed": {"actual": 500}}})),
+            ("2026-05-10", 28000, None, json.dumps({"dailySleepDTO": {"sleepNeed": {"actual": 500}}})),
         )
         conn.commit()
 
         init_db(conn)
         init_db(conn)  # idempotency check
 
-        row = dict(conn.execute(
-            "SELECT * FROM sleep WHERE calendar_date = '2026-05-10'"
-        ).fetchone())
+        row = dict(conn.execute("SELECT * FROM sleep WHERE calendar_date = '2026-05-10'").fetchone())
         assert row["sleep_need_minutes"] == 500
         conn.close()
 
@@ -1362,6 +1471,7 @@ class TestFullUpgradePath:
 # ---------------------------------------------------------------------------
 # Edge cases flagged in code review
 # ---------------------------------------------------------------------------
+
 
 class TestZeroValueBackfill:
     """Regression: data.get(jk) must not coerce 0/False/'' to None."""
@@ -1390,8 +1500,7 @@ class TestZeroValueBackfill:
         """)
         conn.execute(
             "INSERT INTO activity VALUES (?, ?)",
-            (1, json.dumps({"summaryDTO": {"differenceBodyBattery": 0,
-                                            "steps": 0, "totalWork": 0.0}})),
+            (1, json.dumps({"summaryDTO": {"differenceBodyBattery": 0, "steps": 0, "totalWork": 0.0}})),
         )
         conn.commit()
         migrate_activity_table(conn)
@@ -1410,16 +1519,19 @@ class TestZeroValueBackfill:
         """)
         conn.execute(
             "INSERT INTO spo2 VALUES (?, ?)",
-            ("2026-05-10", json.dumps({
-                "numberOfEventsBelowThreshold": 0,
-                "durationOfEventsBelowThreshold": 0,
-            })),
+            (
+                "2026-05-10",
+                json.dumps(
+                    {
+                        "numberOfEventsBelowThreshold": 0,
+                        "durationOfEventsBelowThreshold": 0,
+                    }
+                ),
+            ),
         )
         conn.commit()
         migrate_spo2_table(conn)
-        row = dict(conn.execute(
-            "SELECT * FROM spo2 WHERE calendar_date = '2026-05-10'"
-        ).fetchone())
+        row = dict(conn.execute("SELECT * FROM spo2 WHERE calendar_date = '2026-05-10'").fetchone())
         assert row["events_below_threshold"] == 0
         assert row["duration_below_threshold_secs"] == 0
         conn.close()
@@ -1433,8 +1545,12 @@ class TestSleepNullNestedScore:
             "dailySleepDTO": {
                 "calendarDate": "2026-05-10",
                 "sleepTimeSeconds": 27000,
-                "sleepScores": {"overall": None, "remPercentage": None, "deepPercentage": None,
-                                "lightPercentage": None},
+                "sleepScores": {
+                    "overall": None,
+                    "remPercentage": None,
+                    "deepPercentage": None,
+                    "lightPercentage": None,
+                },
             }
         }
         upsert_sleep(temp_db, record)  # must not raise
@@ -1507,11 +1623,14 @@ class TestActivityUpsertPreservesSummaryData:
 
     def test_flat_then_detail_populates_summary_columns(self, temp_db):
         upsert_activity(temp_db, {"activityId": 8888, "activityName": "First"})
-        upsert_activity(temp_db, {
-            "activityId": 8888,
-            "activityName": "Second",
-            "summaryDTO": {"differenceBodyBattery": -15, "steps": 7000},
-        })
+        upsert_activity(
+            temp_db,
+            {
+                "activityId": 8888,
+                "activityName": "Second",
+                "summaryDTO": {"differenceBodyBattery": -15, "steps": 7000},
+            },
+        )
         row = _row(temp_db, "activity", "activity_id", 8888)
         assert row["activity_name"] == "Second"
         assert row["body_battery_change"] == -15

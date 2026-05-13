@@ -750,7 +750,9 @@ def migrate_activity_splits_table(conn: sqlite3.Connection) -> None:
         return
 
     log.info("Migrating activity_splits table, added columns: %s — backfilling from raw_json", ", ".join(added))
-    rows = conn.execute("SELECT activity_id, split_number, raw_json FROM activity_splits WHERE raw_json IS NOT NULL").fetchall()
+    rows = conn.execute(
+        "SELECT activity_id, split_number, raw_json FROM activity_splits WHERE raw_json IS NOT NULL"
+    ).fetchall()
     for activity_id, split_number, raw in rows:
         try:
             split = json.loads(raw)
@@ -796,8 +798,9 @@ def _add_columns(conn: sqlite3.Connection, table: str, columns: list[tuple[str, 
     return added
 
 
-def _backfill_from_raw(conn: sqlite3.Connection, table: str, pk_cols: list[str],
-                       added: list[str], mapping: dict[str, str]) -> None:
+def _backfill_from_raw(
+    conn: sqlite3.Connection, table: str, pk_cols: list[str], added: list[str], mapping: dict[str, str]
+) -> None:
     """Backfill *added* columns from raw_json using *mapping* {col: json_key}."""
     if not added:
         return
@@ -807,7 +810,7 @@ def _backfill_from_raw(conn: sqlite3.Connection, table: str, pk_cols: list[str],
     pks = ", ".join(pk_cols)
     rows = conn.execute(f"SELECT {pks}, raw_json FROM {table} WHERE raw_json IS NOT NULL").fetchall()
     for row in rows:
-        pk_vals = row[:len(pk_cols)]
+        pk_vals = row[: len(pk_cols)]
         try:
             data = json.loads(row[len(pk_cols)])
         except (json.JSONDecodeError, TypeError):
@@ -822,76 +825,119 @@ def _backfill_from_raw(conn: sqlite3.Connection, table: str, pk_cols: list[str],
 
 
 def migrate_sleep_table(conn: sqlite3.Connection) -> None:
-    added = _add_columns(conn, "sleep", [
-        ("body_battery_change", "INTEGER"),
-        ("resting_heart_rate", "INTEGER"),
-        ("avg_skin_temp_deviation_c", "REAL"),
-        ("avg_skin_temp_deviation_f", "REAL"),
-    ])
-    _backfill_from_raw(conn, "sleep", ["calendar_date"], added, {
-        "body_battery_change": "bodyBatteryChange",
-        "resting_heart_rate": "restingHeartRate",
-        "avg_skin_temp_deviation_c": "avgSkinTempDeviationC",
-        "avg_skin_temp_deviation_f": "avgSkinTempDeviationF",
-    })
+    added = _add_columns(
+        conn,
+        "sleep",
+        [
+            ("body_battery_change", "INTEGER"),
+            ("resting_heart_rate", "INTEGER"),
+            ("avg_skin_temp_deviation_c", "REAL"),
+            ("avg_skin_temp_deviation_f", "REAL"),
+        ],
+    )
+    _backfill_from_raw(
+        conn,
+        "sleep",
+        ["calendar_date"],
+        added,
+        {
+            "body_battery_change": "bodyBatteryChange",
+            "resting_heart_rate": "restingHeartRate",
+            "avg_skin_temp_deviation_c": "avgSkinTempDeviationC",
+            "avg_skin_temp_deviation_f": "avgSkinTempDeviationF",
+        },
+    )
 
 
 def migrate_hrv_table(conn: sqlite3.Connection) -> None:
     added = _add_columns(conn, "hrv", [("feedback_phrase", "TEXT")])
-    _backfill_from_raw(conn, "hrv", ["calendar_date"], added,
-                       {"feedback_phrase": "feedbackPhrase"})
+    _backfill_from_raw(conn, "hrv", ["calendar_date"], added, {"feedback_phrase": "feedbackPhrase"})
 
 
 def migrate_heart_rate_table(conn: sqlite3.Connection) -> None:
     added = _add_columns(conn, "heart_rate", [("last_7day_avg_resting", "REAL")])
-    _backfill_from_raw(conn, "heart_rate", ["calendar_date"], added,
-                       {"last_7day_avg_resting": "lastSevenDaysAvgRestingHeartRate"})
+    _backfill_from_raw(
+        conn, "heart_rate", ["calendar_date"], added, {"last_7day_avg_resting": "lastSevenDaysAvgRestingHeartRate"}
+    )
 
 
 def migrate_spo2_table(conn: sqlite3.Connection) -> None:
-    added = _add_columns(conn, "spo2", [
-        ("events_below_threshold", "INTEGER"),
-        ("duration_below_threshold_secs", "REAL"),
-    ])
-    _backfill_from_raw(conn, "spo2", ["calendar_date"], added, {
-        "events_below_threshold": "numberOfEventsBelowThreshold",
-        "duration_below_threshold_secs": "durationOfEventsBelowThreshold",
-    })
+    added = _add_columns(
+        conn,
+        "spo2",
+        [
+            ("events_below_threshold", "INTEGER"),
+            ("duration_below_threshold_secs", "REAL"),
+        ],
+    )
+    _backfill_from_raw(
+        conn,
+        "spo2",
+        ["calendar_date"],
+        added,
+        {
+            "events_below_threshold": "numberOfEventsBelowThreshold",
+            "duration_below_threshold_secs": "durationOfEventsBelowThreshold",
+        },
+    )
 
 
 def migrate_respiration_table(conn: sqlite3.Connection) -> None:
     added = _add_columns(conn, "respiration", [("avg_sleep", "REAL")])
-    _backfill_from_raw(conn, "respiration", ["calendar_date"], added,
-                       {"avg_sleep": "avgSleepRespirationValue"})
+    _backfill_from_raw(conn, "respiration", ["calendar_date"], added, {"avg_sleep": "avgSleepRespirationValue"})
 
 
 def migrate_hydration_table(conn: sqlite3.Connection) -> None:
-    added = _add_columns(conn, "hydration", [
-        ("sweat_loss_ml", "REAL"),
-        ("activity_intake_ml", "REAL"),
-    ])
-    _backfill_from_raw(conn, "hydration", ["calendar_date"], added, {
-        "sweat_loss_ml": "sweatLossInML",
-        "activity_intake_ml": "activityIntakeInML",
-    })
+    added = _add_columns(
+        conn,
+        "hydration",
+        [
+            ("sweat_loss_ml", "REAL"),
+            ("activity_intake_ml", "REAL"),
+        ],
+    )
+    _backfill_from_raw(
+        conn,
+        "hydration",
+        ["calendar_date"],
+        added,
+        {
+            "sweat_loss_ml": "sweatLossInML",
+            "activity_intake_ml": "activityIntakeInML",
+        },
+    )
 
 
 def migrate_weight_table_v2(conn: sqlite3.Connection) -> None:
-    added = _add_columns(conn, "weight", [
-        ("metabolic_age", "REAL"),
-        ("physique_rating", "INTEGER"),
-    ])
-    _backfill_from_raw(conn, "weight", ["timestamp"], added, {
-        "metabolic_age": "metabolicAge",
-        "physique_rating": "physiqueRating",
-    })
+    added = _add_columns(
+        conn,
+        "weight",
+        [
+            ("metabolic_age", "REAL"),
+            ("physique_rating", "INTEGER"),
+        ],
+    )
+    _backfill_from_raw(
+        conn,
+        "weight",
+        ["timestamp"],
+        added,
+        {
+            "metabolic_age": "metabolicAge",
+            "physique_rating": "physiqueRating",
+        },
+    )
 
 
 def migrate_endurance_score_table(conn: sqlite3.Connection) -> None:
-    added = _add_columns(conn, "endurance_score", [
-        ("feedback_phrase", "TEXT"),
-        ("contributors", "TEXT"),
-    ])
+    added = _add_columns(
+        conn,
+        "endurance_score",
+        [
+            ("feedback_phrase", "TEXT"),
+            ("contributors", "TEXT"),
+        ],
+    )
     if not added:
         return
     rows = conn.execute("SELECT calendar_date, raw_json FROM endurance_score WHERE raw_json IS NOT NULL").fetchall()
@@ -915,29 +961,49 @@ def migrate_endurance_score_table(conn: sqlite3.Connection) -> None:
 
 
 def migrate_hill_score_table(conn: sqlite3.Connection) -> None:
-    added = _add_columns(conn, "hill_score", [
-        ("vo2_max", "REAL"),
-        ("vo2_max_precise", "REAL"),
-        ("feedback_phrase_id", "TEXT"),
-    ])
-    _backfill_from_raw(conn, "hill_score", ["calendar_date"], added, {
-        "vo2_max": "vo2Max",
-        "vo2_max_precise": "vo2MaxPreciseValue",
-        "feedback_phrase_id": "hillScoreFeedbackPhraseId",
-    })
+    added = _add_columns(
+        conn,
+        "hill_score",
+        [
+            ("vo2_max", "REAL"),
+            ("vo2_max_precise", "REAL"),
+            ("feedback_phrase_id", "TEXT"),
+        ],
+    )
+    _backfill_from_raw(
+        conn,
+        "hill_score",
+        ["calendar_date"],
+        added,
+        {
+            "vo2_max": "vo2Max",
+            "vo2_max_precise": "vo2MaxPreciseValue",
+            "feedback_phrase_id": "hillScoreFeedbackPhraseId",
+        },
+    )
 
 
 def migrate_gear_table(conn: sqlite3.Connection) -> None:
-    added = _add_columns(conn, "gear", [
-        ("distance_used_meters", "REAL"),
-        ("duration_used_seconds", "INTEGER"),
-        ("days_used", "INTEGER"),
-    ])
-    _backfill_from_raw(conn, "gear", ["gear_id"], added, {
-        "distance_used_meters": "distanceUsedMeters",
-        "duration_used_seconds": "durationUsedSeconds",
-        "days_used": "daysUsed",
-    })
+    added = _add_columns(
+        conn,
+        "gear",
+        [
+            ("distance_used_meters", "REAL"),
+            ("duration_used_seconds", "INTEGER"),
+            ("days_used", "INTEGER"),
+        ],
+    )
+    _backfill_from_raw(
+        conn,
+        "gear",
+        ["gear_id"],
+        added,
+        {
+            "distance_used_meters": "distanceUsedMeters",
+            "duration_used_seconds": "durationUsedSeconds",
+            "days_used": "daysUsed",
+        },
+    )
 
 
 def migrate_sleep_table_v2(conn: sqlite3.Connection) -> None:
@@ -959,24 +1025,28 @@ def migrate_sleep_table_v2(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE sleep RENAME COLUMN sleep_score_composition TO sleep_light_pct")
     conn.commit()
 
-    _add_columns(conn, "sleep", [
-        ("sleep_need_minutes", "INTEGER"),
-        ("highest_spo2", "REAL"),
-        ("sleep_score_overall", "INTEGER"),
-        ("sleep_light_pct", "INTEGER"),
-        ("sleep_score_rem", "INTEGER"),
-        ("sleep_score_deep", "INTEGER"),
-    ])
+    _add_columns(
+        conn,
+        "sleep",
+        [
+            ("sleep_need_minutes", "INTEGER"),
+            ("highest_spo2", "REAL"),
+            ("sleep_score_overall", "INTEGER"),
+            ("sleep_light_pct", "INTEGER"),
+            ("sleep_score_rem", "INTEGER"),
+            ("sleep_score_deep", "INTEGER"),
+        ],
+    )
     # All fields are nested under dailySleepDTO — use direct SQL UPDATE with json_extract.
     # WHERE {col} IS NULL makes the backfill idempotent and safe to re-run even
     # if the schema is in a partially-migrated state.
     update_map = {
-        "sleep_need_minutes":  "$.dailySleepDTO.sleepNeed.actual",
-        "highest_spo2":        "$.dailySleepDTO.highestSpO2Value",
+        "sleep_need_minutes": "$.dailySleepDTO.sleepNeed.actual",
+        "highest_spo2": "$.dailySleepDTO.highestSpO2Value",
         "sleep_score_overall": "$.dailySleepDTO.sleepScores.overall.value",
-        "sleep_light_pct":     "$.dailySleepDTO.sleepScores.lightPercentage.value",
-        "sleep_score_rem":     "$.dailySleepDTO.sleepScores.remPercentage.value",
-        "sleep_score_deep":    "$.dailySleepDTO.sleepScores.deepPercentage.value",
+        "sleep_light_pct": "$.dailySleepDTO.sleepScores.lightPercentage.value",
+        "sleep_score_rem": "$.dailySleepDTO.sleepScores.remPercentage.value",
+        "sleep_score_deep": "$.dailySleepDTO.sleepScores.deepPercentage.value",
     }
     for col, path in update_map.items():
         conn.execute(
@@ -987,32 +1057,62 @@ def migrate_sleep_table_v2(conn: sqlite3.Connection) -> None:
 
 
 def migrate_fitness_age_table(conn: sqlite3.Connection) -> None:
-    added = _add_columns(conn, "fitness_age", [
-        ("achievable_fitness_age", "REAL"),
-    ])
-    _backfill_from_raw(conn, "fitness_age", ["calendar_date"], added, {
-        "achievable_fitness_age": "achievableFitnessAge",
-    })
+    added = _add_columns(
+        conn,
+        "fitness_age",
+        [
+            ("achievable_fitness_age", "REAL"),
+        ],
+    )
+    _backfill_from_raw(
+        conn,
+        "fitness_age",
+        ["calendar_date"],
+        added,
+        {
+            "achievable_fitness_age": "achievableFitnessAge",
+        },
+    )
 
 
 def migrate_weight_table_v3(conn: sqlite3.Connection) -> None:
-    added = _add_columns(conn, "weight", [
-        ("visceral_fat", "REAL"),
-    ])
-    _backfill_from_raw(conn, "weight", ["timestamp"], added, {
-        "visceral_fat": "visceralFat",
-    })
+    added = _add_columns(
+        conn,
+        "weight",
+        [
+            ("visceral_fat", "REAL"),
+        ],
+    )
+    _backfill_from_raw(
+        conn,
+        "weight",
+        ["timestamp"],
+        added,
+        {
+            "visceral_fat": "visceralFat",
+        },
+    )
 
 
 def migrate_gear_table_v2(conn: sqlite3.Connection) -> None:
-    added = _add_columns(conn, "gear", [
-        ("status", "TEXT"),
-        ("max_usage_distance_meters", "REAL"),
-    ])
-    _backfill_from_raw(conn, "gear", ["gear_id"], added, {
-        "status": "status",
-        "max_usage_distance_meters": "maxUsageDistanceMeters",
-    })
+    added = _add_columns(
+        conn,
+        "gear",
+        [
+            ("status", "TEXT"),
+            ("max_usage_distance_meters", "REAL"),
+        ],
+    )
+    _backfill_from_raw(
+        conn,
+        "gear",
+        ["gear_id"],
+        added,
+        {
+            "status": "status",
+            "max_usage_distance_meters": "maxUsageDistanceMeters",
+        },
+    )
 
 
 def migrate_activity_table(conn: sqlite3.Connection) -> None:
@@ -1029,19 +1129,23 @@ def migrate_activity_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE activity RENAME COLUMN total_work_kj TO total_work_kcal")
         conn.commit()
 
-    _add_columns(conn, "activity", [
-        ("body_battery_change", "INTEGER"),
-        ("total_work_kcal", "REAL"),
-        ("avg_grade_adjusted_speed", "REAL"),
-        ("activity_steps", "INTEGER"),
-        ("activity_min_hr", "INTEGER"),
-    ])
+    _add_columns(
+        conn,
+        "activity",
+        [
+            ("body_battery_change", "INTEGER"),
+            ("total_work_kcal", "REAL"),
+            ("avg_grade_adjusted_speed", "REAL"),
+            ("activity_steps", "INTEGER"),
+            ("activity_min_hr", "INTEGER"),
+        ],
+    )
     update_map = {
-        "body_battery_change":      "$.summaryDTO.differenceBodyBattery",
-        "total_work_kcal":          "$.summaryDTO.totalWork",
+        "body_battery_change": "$.summaryDTO.differenceBodyBattery",
+        "total_work_kcal": "$.summaryDTO.totalWork",
         "avg_grade_adjusted_speed": "$.summaryDTO.avgGradeAdjustedSpeed",
-        "activity_steps":           "$.summaryDTO.steps",
-        "activity_min_hr":          "$.summaryDTO.minHR",
+        "activity_steps": "$.summaryDTO.steps",
+        "activity_min_hr": "$.summaryDTO.minHR",
     }
     for col, path in update_map.items():
         conn.execute(
@@ -1052,66 +1156,87 @@ def migrate_activity_table(conn: sqlite3.Connection) -> None:
 
 
 def migrate_activity_splits_v2(conn: sqlite3.Connection) -> None:
-    added = _add_columns(conn, "activity_splits", [
-        ("normalized_power", "REAL"),
-        ("avg_respiration_rate", "REAL"),
-        ("max_respiration_rate", "REAL"),
-        ("start_latitude", "REAL"),
-        ("start_longitude", "REAL"),
-        ("end_latitude", "REAL"),
-        ("end_longitude", "REAL"),
-        ("start_time_gmt", "TEXT"),
-        ("calories", "REAL"),
-        ("left_pedal_smoothness", "REAL"),
-        ("right_pedal_smoothness", "REAL"),
-        ("left_torque_effectiveness", "REAL"),
-        ("right_torque_effectiveness", "REAL"),
-        ("surface_unpaved_pct", "REAL"),
-    ])
-    _backfill_from_raw(conn, "activity_splits", ["activity_id", "split_number"], added, {
-        "normalized_power": "normalizedPower",
-        "avg_respiration_rate": "avgRespirationRate",
-        "max_respiration_rate": "maxRespirationRate",
-        "start_latitude": "startLatitude",
-        "start_longitude": "startLongitude",
-        "end_latitude": "endLatitude",
-        "end_longitude": "endLongitude",
-        "start_time_gmt": "startTimeGMT",
-        "calories": "calories",
-        "left_pedal_smoothness": "leftPedalSmoothness",
-        "right_pedal_smoothness": "rightPedalSmoothness",
-        "left_torque_effectiveness": "leftTorqueEffectiveness",
-        "right_torque_effectiveness": "rightTorqueEffectiveness",
-        "surface_unpaved_pct": "surfaceTypeUnpavedPercentage",
-    })
+    added = _add_columns(
+        conn,
+        "activity_splits",
+        [
+            ("normalized_power", "REAL"),
+            ("avg_respiration_rate", "REAL"),
+            ("max_respiration_rate", "REAL"),
+            ("start_latitude", "REAL"),
+            ("start_longitude", "REAL"),
+            ("end_latitude", "REAL"),
+            ("end_longitude", "REAL"),
+            ("start_time_gmt", "TEXT"),
+            ("calories", "REAL"),
+            ("left_pedal_smoothness", "REAL"),
+            ("right_pedal_smoothness", "REAL"),
+            ("left_torque_effectiveness", "REAL"),
+            ("right_torque_effectiveness", "REAL"),
+            ("surface_unpaved_pct", "REAL"),
+        ],
+    )
+    _backfill_from_raw(
+        conn,
+        "activity_splits",
+        ["activity_id", "split_number"],
+        added,
+        {
+            "normalized_power": "normalizedPower",
+            "avg_respiration_rate": "avgRespirationRate",
+            "max_respiration_rate": "maxRespirationRate",
+            "start_latitude": "startLatitude",
+            "start_longitude": "startLongitude",
+            "end_latitude": "endLatitude",
+            "end_longitude": "endLongitude",
+            "start_time_gmt": "startTimeGMT",
+            "calories": "calories",
+            "left_pedal_smoothness": "leftPedalSmoothness",
+            "right_pedal_smoothness": "rightPedalSmoothness",
+            "left_torque_effectiveness": "leftTorqueEffectiveness",
+            "right_torque_effectiveness": "rightTorqueEffectiveness",
+            "surface_unpaved_pct": "surfaceTypeUnpavedPercentage",
+        },
+    )
 
 
 def migrate_hollow_tables(conn: sqlite3.Connection) -> None:
     """Add scalar columns to previously raw_json-only tables and backfill."""
-    _add_columns(conn, "daily_events", [
-        ("activity_type", "TEXT"),
-        ("activity_sub_type", "TEXT"),
-        ("start_timestamp_local", "TEXT"),
-        ("end_timestamp_local", "TEXT"),
-        ("duration_seconds", "REAL"),
-        ("device_id", "TEXT"),
-    ])
-    _add_columns(conn, "wellness_activity", [
-        ("activity_name", "TEXT"),
-        ("wellness_activity_type", "TEXT"),
-        ("start_timestamp_local", "TEXT"),
-        ("end_timestamp_local", "TEXT"),
-    ])
-    _add_columns(conn, "health_snapshot", [
-        ("activity_name", "TEXT"),
-        ("wellness_activity_type", "TEXT"),
-        ("start_timestamp_local", "TEXT"),
-        ("end_timestamp_local", "TEXT"),
-    ])
+    _add_columns(
+        conn,
+        "daily_events",
+        [
+            ("activity_type", "TEXT"),
+            ("activity_sub_type", "TEXT"),
+            ("start_timestamp_local", "TEXT"),
+            ("end_timestamp_local", "TEXT"),
+            ("duration_seconds", "REAL"),
+            ("device_id", "TEXT"),
+        ],
+    )
+    _add_columns(
+        conn,
+        "wellness_activity",
+        [
+            ("activity_name", "TEXT"),
+            ("wellness_activity_type", "TEXT"),
+            ("start_timestamp_local", "TEXT"),
+            ("end_timestamp_local", "TEXT"),
+        ],
+    )
+    _add_columns(
+        conn,
+        "health_snapshot",
+        [
+            ("activity_name", "TEXT"),
+            ("wellness_activity_type", "TEXT"),
+            ("start_timestamp_local", "TEXT"),
+            ("end_timestamp_local", "TEXT"),
+        ],
+    )
     # Backfill daily_events via upsert (handles both dict and list raw_json)
     de_rows = conn.execute(
-        "SELECT calendar_date, raw_json FROM daily_events "
-        "WHERE activity_type IS NULL AND raw_json IS NOT NULL"
+        "SELECT calendar_date, raw_json FROM daily_events WHERE activity_type IS NULL AND raw_json IS NOT NULL"
     ).fetchall()
     for cal_date, raw in de_rows:
         try:
@@ -1122,18 +1247,24 @@ def migrate_hollow_tables(conn: sqlite3.Connection) -> None:
 
     # Backfill scalar columns for each hollow table from their raw_json
     for table, mapping in [
-        ("wellness_activity", {
-            "activity_name": "activityName",
-            "wellness_activity_type": "wellnessActivityType",
-            "start_timestamp_local": "startTimestampLocal",
-            "end_timestamp_local": "endTimestampLocal",
-        }),
-        ("health_snapshot", {
-            "activity_name": "activityName",
-            "wellness_activity_type": "wellnessActivityType",
-            "start_timestamp_local": "startTimestampLocal",
-            "end_timestamp_local": "endTimestampLocal",
-        }),
+        (
+            "wellness_activity",
+            {
+                "activity_name": "activityName",
+                "wellness_activity_type": "wellnessActivityType",
+                "start_timestamp_local": "startTimestampLocal",
+                "end_timestamp_local": "endTimestampLocal",
+            },
+        ),
+        (
+            "health_snapshot",
+            {
+                "activity_name": "activityName",
+                "wellness_activity_type": "wellnessActivityType",
+                "start_timestamp_local": "startTimestampLocal",
+                "end_timestamp_local": "endTimestampLocal",
+            },
+        ),
     ]:
         rows = conn.execute(f"SELECT calendar_date, raw_json FROM {table} WHERE raw_json IS NOT NULL").fetchall()
         for cal_date, raw in rows:
@@ -1733,7 +1864,9 @@ def upsert_sleep(conn: sqlite3.Connection, record: dict) -> None:
             record.get("restingHeartRate"),
             record.get("avgSkinTempDeviationC"),
             record.get("avgSkinTempDeviationF"),
-            (dto.get("sleepNeed") or {}).get("actual") if isinstance(dto.get("sleepNeed"), dict) else dto.get("sleepNeed"),
+            (dto.get("sleepNeed") or {}).get("actual")
+            if isinstance(dto.get("sleepNeed"), dict)
+            else dto.get("sleepNeed"),
             dto.get("highestSpO2Value"),
             # Guard against Garmin returning null for a specific score sub-dict
             # (e.g. {"sleepScores": {"overall": null}}) — happens on nights where
