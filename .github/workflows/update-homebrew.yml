@@ -3,6 +3,13 @@ name: Update Homebrew Formula
 on:
   release:
     types: [published]
+  # Allow regenerating the formula for an already-published version without
+  # cutting a new release (e.g. to repair a broken formula).
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.1.11). Defaults to the latest release tag."
+        required: false
 
 permissions:
   contents: read
@@ -10,17 +17,29 @@ permissions:
 jobs:
   update-formula:
     name: Update Homebrew tap
-    runs-on: ubuntu-latest
+    # macOS runner: Homebrew is preinstalled, which `brew update-python-resources`
+    # needs to resolve and pin the full Python dependency tree.
+    runs-on: macos-latest
     steps:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
+      - name: Determine version
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Targeting version: $VERSION"
+
       - name: Get release info from PyPI
         id: pypi
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          # Retry up to 5 times waiting for PyPI to index the new version
+          VERSION="${{ steps.version.outputs.version }}"
+          # Retry up to 5 times waiting for PyPI to index the new version.
           for i in 1 2 3 4 5; do
             echo "Attempt $i: checking PyPI for version $VERSION..."
             if python3 -c "
@@ -31,8 +50,7 @@ jobs:
                   print('url=' + u['url'])
                   print('sha256=' + u['digests']['sha256'])
                   break
-          " >> $GITHUB_OUTPUT 2>/dev/null; then
-              echo "version=$VERSION" >> $GITHUB_OUTPUT
+          " >> "$GITHUB_OUTPUT" 2>/dev/null; then
               echo "Found on PyPI!"
               break
             fi
@@ -40,15 +58,16 @@ jobs:
             sleep 60
           done
 
-      - name: Clone homebrew-tap
+      - name: Clone homebrew-tap into Homebrew's tap directory
         run: |
-          git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/nrvim/homebrew-tap.git
-          cd homebrew-tap
+          TAP_DIR="$(brew --repository)/Library/Taps/nrvim/homebrew-tap"
+          rm -rf "$TAP_DIR"
+          git clone "https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/nrvim/homebrew-tap.git" "$TAP_DIR"
 
-      - name: Update formula
+      - name: Write base formula
         run: |
-          cd homebrew-tap
-          cat > Formula/garmin-givemydata.rb << 'FORMULA'
+          TAP_DIR="$(brew --repository)/Library/Taps/nrvim/homebrew-tap"
+          cat > "$TAP_DIR/Formula/garmin-givemydata.rb" << 'FORMULA'
           class GarminGivemydata < Formula
             include Language::Python::Virtualenv
 
@@ -59,6 +78,8 @@ jobs:
             license "AGPL-3.0-only"
 
             depends_on "python@3.12"
+
+            # resource blocks are generated below by `brew update-python-resources`.
 
             def install
               virtualenv_install_with_resources
@@ -80,12 +101,26 @@ jobs:
           end
           FORMULA
 
+      - name: Generate Python resource blocks
+        run: |
+          # Resolves the full dependency tree from PyPI and writes a pinned
+          # `resource` block (url + sha256) for every transitive dependency.
+          brew update-python-resources nrvim/homebrew-tap/garmin-givemydata
+
+      - name: Verify formula parses
+        run: |
+          ruby -c "$(brew --repository)/Library/Taps/nrvim/homebrew-tap/Formula/garmin-givemydata.rb"
+
       - name: Commit and push
         run: |
-          cd homebrew-tap
+          TAP_DIR="$(brew --repository)/Library/Taps/nrvim/homebrew-tap"
+          cd "$TAP_DIR"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/garmin-givemydata.rb
-          git diff --cached --quiet && echo "No changes" && exit 0
-          git commit -m "bump: garmin-givemydata v${{ steps.pypi.outputs.version }}"
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git commit -m "bump: garmin-givemydata v${{ steps.version.outputs.version }}"
           git push
