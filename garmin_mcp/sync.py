@@ -46,7 +46,9 @@ def _parse_trackpoints_for_activities(conn, activity_ids):
     return total_trackpoints
 
 
-def incremental_sync(target_date: str = None, save_raw: bool = False, parse_trackpoints: bool = True) -> dict:
+def incremental_sync(
+    target_date: str = None, start_date: str = None, save_raw: bool = False, parse_trackpoints: bool = True
+) -> dict:
     """Fetch today's data from Garmin and save directly to the database.
 
     Parameters
@@ -54,6 +56,9 @@ def incremental_sync(target_date: str = None, save_raw: bool = False, parse_trac
     target_date:
         ISO date string (``YYYY-MM-DD``) to treat as "today".  Defaults to
         the actual current date.
+    start_date:
+        ISO date string (``YYYY-MM-DD``) for the beginning of the fetch range.
+        Defaults to yesterday (incremental). Set to an early date for full-history sync.
     save_raw:
         Whether to save raw JSON responses under the ``debug/raw`` directory
         (next to ``browser_profile``).
@@ -64,13 +69,29 @@ def incremental_sync(target_date: str = None, save_raw: bool = False, parse_trac
     Returns
     -------
     dict
-        Summary with keys: ``status``, ``target_date``, ``yesterday``,
+        Summary with keys: ``status``, ``target_date``, ``start_date``,
         ``records`` (per-endpoint counts), ``total_upserted``.
     """
     from garmin_client import GarminClient
 
     today = target_date or date.today().isoformat()
     yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
+
+    if start_date is not None:
+        try:
+            parsed_start = date.fromisoformat(start_date)
+        except ValueError:
+            return {
+                "status": "error",
+                "message": f"start_date must be YYYY-MM-DD, got: {start_date!r}",
+            }
+        if parsed_start > date.fromisoformat(today):
+            return {
+                "status": "error",
+                "message": f"start_date ({start_date}) must be on or before target_date ({today})",
+            }
+    effective_start = start_date or yesterday
+    is_backfill = start_date is not None and start_date != yesterday
 
     PROJECT_DIR = Path(__file__).parent.parent
     PROFILE_DIR = PROJECT_DIR / "browser_profile"
@@ -129,7 +150,8 @@ def incremental_sync(target_date: str = None, save_raw: bool = False, parse_trac
         session_file=SESSION_FILE,
     )
 
-    logger.info("Starting incremental sync for %s (+ %s)", today, yesterday)
+    sync_label = "backfill" if is_backfill else "incremental sync"
+    logger.info("Starting %s for %s (from %s)", sync_label, today, effective_start)
 
     try:
         if not client.login():
@@ -137,7 +159,7 @@ def incremental_sync(target_date: str = None, save_raw: bool = False, parse_trac
 
         client.fetch_all(
             target_date=today,
-            start_date=yesterday,
+            start_date=effective_start,
             end_date=today,
             on_batch=on_batch,
             known_activity_ids=known_activity_ids,
@@ -158,17 +180,17 @@ def incremental_sync(target_date: str = None, save_raw: bool = False, parse_trac
     total = sum(counts.values())
     conn.execute(
         "INSERT INTO sync_log (sync_date, sync_type, records_upserted, status) VALUES (?, ?, ?, ?)",
-        (sync_ts, "incremental_sync", total, "ok"),
+        (sync_ts, "backfill" if is_backfill else "incremental_sync", total, "ok"),
     )
     conn.commit()
     conn.close()
 
-    logger.info("Incremental sync complete. Total records upserted: %d", total)
+    logger.info("%s complete. Total records upserted: %d", sync_label.capitalize(), total)
 
     return {
         "status": "ok",
         "target_date": today,
-        "yesterday": yesterday,
+        "start_date": effective_start,
         "records": counts,
         "total_upserted": total,
     }
@@ -179,12 +201,18 @@ def incremental_sync(target_date: str = None, save_raw: bool = False, parse_trac
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import sys
+    import argparse
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    arg_date = sys.argv[1] if len(sys.argv) > 1 else None
-    result = incremental_sync(target_date=arg_date)
+    parser = argparse.ArgumentParser(
+        description="Sync data from Garmin Connect into the local SQLite database.",
+        epilog="Example: python -m garmin_mcp.sync --start-date 2018-01-01 (full history backfill)",
+    )
+    parser.add_argument("target_date", nargs="?", help="YYYY-MM-DD (default: today)")
+    parser.add_argument("--start-date", help="YYYY-MM-DD start of range (default: yesterday)")
+    args = parser.parse_args()
+    result = incremental_sync(target_date=args.target_date, start_date=args.start_date)
     print(result)
