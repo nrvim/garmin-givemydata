@@ -2631,9 +2631,15 @@ def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str
                 if aid:
                     import json as _json
 
+                    summary_dto = rec.get("summaryDTO") or {}
                     conn.execute(
-                        "UPDATE activity SET raw_json = ? WHERE activity_id = ?",
-                        (_json.dumps(rec), aid),
+                        "UPDATE activity SET raw_json = ?, direct_workout_feel = COALESCE(?, direct_workout_feel), direct_workout_rpe = COALESCE(?, direct_workout_rpe) WHERE activity_id = ?",
+                        (
+                            _json.dumps(rec),
+                            summary_dto.get("directWorkoutFeel"),
+                            summary_dto.get("directWorkoutRpe"),
+                            aid,
+                        ),
                     )
                     # Extract running dynamics if present
                     upsert_running_dynamics(conn, aid, rec)
