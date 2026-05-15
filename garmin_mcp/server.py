@@ -742,7 +742,8 @@ def garmin_activity_detail(activity_id: int = 0, last: bool = False) -> str:
                       min_temperature, max_temperature,
                       body_battery_change, total_work_kcal,
                       ROUND(avg_grade_adjusted_speed, 3) AS avg_grade_adjusted_speed_mps,
-                      activity_steps, activity_min_hr
+                      activity_steps, activity_min_hr,
+                      direct_workout_feel, direct_workout_rpe
                FROM activity WHERE activity_id = ?""",
             [activity_id],
         )
@@ -788,10 +789,12 @@ def garmin_activity_detail(activity_id: int = 0, last: bool = False) -> str:
             [activity_id],
         )
 
+        # Garmin reports exercise-set weight in grams; surface it as kg.
         exercise_sets = query(
             conn,
             """SELECT set_number, exercise_name, exercise_category,
-                      reps, weight, ROUND(duration_seconds, 0) AS duration_sec
+                      reps, ROUND(weight / 1000.0, 2) AS weight_kg,
+                      ROUND(duration_seconds, 0) AS duration_sec
                FROM activity_exercise_sets WHERE activity_id = ?
                ORDER BY set_number""",
             [activity_id],
@@ -809,7 +812,12 @@ def garmin_activity_detail(activity_id: int = 0, last: bool = False) -> str:
             "splits": splits if splits else [],
             "hr_zones": hr_zones[0] if hr_zones else {},
             "weather": weather[0] if weather else {},
-            "exercise_sets": [s for s in exercise_sets if s.get("exercise_name")] if exercise_sets else [],
+            # Keep actual exercise sets (named or at least categorised) and drop
+            # empty REST rows. An ACTIVE set Garmin couldn't name still carries
+            # reps/weight/duration worth surfacing.
+            "exercise_sets": [s for s in exercise_sets if s.get("exercise_name") or s.get("exercise_category")]
+            if exercise_sets
+            else [],
             "running_dynamics": dynamics[0] if dynamics else {},
         }
         return json.dumps(result, indent=2, default=str)

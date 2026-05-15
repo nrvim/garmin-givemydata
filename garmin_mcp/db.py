@@ -2631,12 +2631,19 @@ def upsert_activity_exercise_sets(conn: sqlite3.Connection, activity_id: int, da
     sets = data if isinstance(data, list) else data.get("exerciseSets") or [data]
     count = 0
     for i, s in enumerate(sets):
-        # The Garmin API nests exercise details under an 'exercises' list within each set.
-        # Fall back to top-level keys for backward compatibility.
+        # The Garmin API nests exercise details under an 'exercises' list within
+        # each set. That list is a ranked set of candidate classifications, each
+        # with a 'probability' — pick the most likely one rather than assuming
+        # list order. Fall back to top-level keys for backward compatibility.
         exercises = s.get("exercises") or []
-        first_exercise = exercises[0] if exercises else {}
-        exercise_name = first_exercise.get("name") or s.get("exerciseName")
-        exercise_category = first_exercise.get("category") or s.get("exerciseCategory")
+        best_exercise = max(exercises, key=lambda e: e.get("probability") or 0) if exercises else {}
+        exercise_name = best_exercise.get("name") or s.get("exerciseName")
+        exercise_category = best_exercise.get("category") or s.get("exerciseCategory")
+        # repetitionCount can legitimately be 0 (e.g. a timed hold); only fall
+        # back to 'reps' when the key is genuinely absent, not when it is 0.
+        reps = s.get("repetitionCount")
+        if reps is None:
+            reps = s.get("reps")
         conn.execute(
             """INSERT OR REPLACE INTO activity_exercise_sets
                (activity_id, set_number, exercise_name, exercise_category,
@@ -2647,7 +2654,7 @@ def upsert_activity_exercise_sets(conn: sqlite3.Connection, activity_id: int, da
                 i + 1,
                 exercise_name,
                 exercise_category,
-                s.get("repetitionCount") or s.get("reps"),
+                reps,
                 s.get("weight"),
                 s.get("duration"),
                 json.dumps(s),

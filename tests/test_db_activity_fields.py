@@ -144,6 +144,62 @@ class TestUpsertActivityExerciseSets:
         assert rows[0]["exercise_name"] is None
         assert rows[0]["exercise_category"] is None
 
+    def test_picks_highest_probability_candidate(self, temp_db):
+        """The 'exercises' list is ranked candidates; pick the most probable,
+        not list index 0."""
+        data = {
+            "exerciseSets": [
+                {
+                    "setType": "ACTIVE",
+                    "exercises": [
+                        {"category": "CURL", "name": "BICEP_CURL", "probability": 5},
+                        {"category": "ROW", "name": "DUMBBELL_ROW", "probability": 95},
+                        {"category": "PRESS", "name": "BENCH_PRESS", "probability": 0},
+                    ],
+                    "repetitionCount": 8,
+                }
+            ]
+        }
+        upsert_activity_exercise_sets(temp_db, 99100, data)
+        rows = query(
+            temp_db,
+            "SELECT exercise_name, exercise_category FROM activity_exercise_sets WHERE activity_id = ?",
+            [99100],
+        )
+        assert rows[0]["exercise_name"] == "DUMBBELL_ROW"
+        assert rows[0]["exercise_category"] == "ROW"
+
+    def test_zero_reps_preserved_not_nulled(self, temp_db):
+        """repetitionCount of 0 (e.g. a timed hold) must be stored as 0, not NULL."""
+        data = {
+            "exerciseSets": [
+                {
+                    "setType": "ACTIVE",
+                    "exercises": [{"category": "CALF_RAISE", "name": "_3_WAY_CALF_RAISE"}],
+                    "repetitionCount": 0,
+                    "duration": 18.099,
+                }
+            ]
+        }
+        upsert_activity_exercise_sets(temp_db, 99101, data)
+        rows = query(
+            temp_db,
+            "SELECT reps FROM activity_exercise_sets WHERE activity_id = ?",
+            [99101],
+        )
+        assert rows[0]["reps"] == 0
+
+    def test_reps_fallback_when_repetition_count_absent(self, temp_db):
+        """When repetitionCount key is absent entirely, fall back to 'reps'."""
+        data = [{"exerciseName": "SQUAT", "exerciseCategory": "LEGS", "reps": 12}]
+        upsert_activity_exercise_sets(temp_db, 99102, data)
+        rows = query(
+            temp_db,
+            "SELECT reps FROM activity_exercise_sets WHERE activity_id = ?",
+            [99102],
+        )
+        assert rows[0]["reps"] == 12
+
 
 class TestMigrateActivityTable:
     """Verify migrate_activity_table adds missing columns to existing databases."""
