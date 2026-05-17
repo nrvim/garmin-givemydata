@@ -124,6 +124,7 @@ def daily_rest(display_name: str, date: str) -> dict:
         "hydration": f"/gc-api/usersummary-service/usersummary/hydration/allData/{date}",
         "body_battery_events": f"/gc-api/wellness-service/wellness/bodyBattery/events/{date}",
         "nutrition_meals": f"/gc-api/nutrition-service/meals/{date}",
+        "nutrition": f"/gc-api/nutrition-service/food/logs/{date}",
         "fitness_age": f"/gc-api/fitnessage-service/fitnessage/{date}",
         "wellness_activity": f"/gc-api/wellnessactivity-service/activity/summary/{date}",
         "daily_movement": f"/gc-api/wellness-service/wellness/dailyMovement?calendarDate={date}",

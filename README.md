@@ -18,7 +18,7 @@ You paid for the hardware. You generated the data with your body. You should be 
 
 This project gets your data out of Garmin Connect and into a local SQLite database where **you** own it and **AI can analyze it** through an MCP server for Claude Code.
 
-**48 tables, 10+ years of history, 45 MCP tools for AI analysis. Your data stays on your machine.**
+**50 tables, 10+ years of history, 45 MCP tools for AI analysis. Your data stays on your machine.**
 
 ## The Problem
 
@@ -153,7 +153,7 @@ Any client supporting [MCP stdio transport](https://spec.modelcontextprotocol.io
 
 ## What You Get
 
-- **ALL your data** in one command — 48 tables, activities with splits/weather/HR zones/GPS trackpoints, original FIT files
+- **ALL your data** in one command — 50 tables, activities with splits/weather/HR zones/GPS trackpoints, original FIT files
 - **10+ years** of history fetched automatically, smart incremental sync after that
 - **45 MCP tools** for AI analysis — not just raw data, but tools with clinical context, anomaly detection, and professional training metrics
 - **Export to anything** — CSV, JSON, GPX, TCX from your local database
@@ -169,7 +169,7 @@ The MCP server gives AI assistants deep access to your health data. Every tool r
 | Tool | What It Does |
 |------|-------------|
 | `garmin_sync` | Check data freshness and pull latest data from Garmin — always shows when the last sync happened. Use `refresh=False` to just check status |
-| `garmin_schema` | Show all 48 tables, columns, and row counts |
+| `garmin_schema` | Show all 50 tables, columns, and row counts |
 | `garmin_query` | Run any read-only SELECT query (read-only enforced at the SQLite engine level) |
 
 </details>
@@ -327,7 +327,7 @@ fit/                   # Original FIT files (lossless)
 </details>
 
 <details>
-<summary>Comprehensive data — 48 tables</summary>
+<summary>Comprehensive data — 50 tables</summary>
 
 | Category | Data |
 |----------|------|
@@ -353,6 +353,7 @@ fit/                   # Original FIT files (lossless)
 | **VO2max** | Running and cycling VO2max trend over time |
 | **Blood Pressure** | Systolic, diastolic, pulse |
 | **Calories** | Total, active, BMR, consumed, remaining |
+| **Nutrition** | Daily consumed calories/protein/fat/carbs, plus a per-food log: every logged food with servings, time, and full macro/micronutrient breakdown (fiber, sugars, fats, sodium, potassium, cholesterol, calcium, iron, vitamins A/C/D) |
 | **Fitness Age** | Chronological age vs fitness age |
 | **Personal Records** | All PRs across all activity types |
 | **Earned Badges** | All badges earned with date and category |
@@ -376,7 +377,7 @@ garmin-givemydata/
 │   ├── client.py               #   GarminClient (login, fetch, export)
 │   └── endpoints.py            #   API endpoint definitions
 ├── garmin_mcp/                 # MCP server + database layer
-│   ├── db.py                   #   SQLite schema (48 tables), upsert helpers
+│   ├── db.py                   #   SQLite schema (50 tables), upsert helpers
 │   ├── server.py               #   FastMCP server with 45 tools
 │   ├── export.py               #   CSV, JSON, GPX, TCX export
 │   ├── import_json.py          #   JSON → SQLite bulk import

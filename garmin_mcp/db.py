@@ -453,6 +453,51 @@ CREATE TABLE IF NOT EXISTS calories (
     raw_json        TEXT
 );
 
+CREATE TABLE IF NOT EXISTS nutrition_daily (
+    calendar_date   TEXT PRIMARY KEY,
+    calories        REAL,
+    protein         REAL,
+    fat             REAL,
+    carbs           REAL,
+    raw_json        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS nutrition_food_log (
+    log_id              TEXT PRIMARY KEY,
+    calendar_date       TEXT,
+    logged_at           TEXT,
+    meal_time           TEXT,
+    food_name           TEXT,
+    brand_name          TEXT,
+    food_type           TEXT,
+    food_source         TEXT,
+    food_id             TEXT,
+    serving_qty         REAL,
+    serving_unit        TEXT,
+    serving_base_units  REAL,
+    is_favorite         INTEGER,
+    calories            REAL,
+    protein             REAL,
+    fat                 REAL,
+    carbs               REAL,
+    fiber               REAL,
+    sugar               REAL,
+    added_sugars        REAL,
+    saturated_fat       REAL,
+    monounsaturated_fat REAL,
+    polyunsaturated_fat REAL,
+    trans_fat           REAL,
+    cholesterol         REAL,
+    sodium              REAL,
+    potassium           REAL,
+    calcium             REAL,
+    iron                REAL,
+    vitamin_a           REAL,
+    vitamin_c           REAL,
+    vitamin_d           REAL,
+    raw_json            TEXT
+);
+
 CREATE TABLE IF NOT EXISTS sleep_stats (
     calendar_date   TEXT PRIMARY KEY,
     raw_json        TEXT
@@ -2462,6 +2507,154 @@ def upsert_calories(conn: sqlite3.Connection, record: dict) -> None:
     )
 
 
+# Garmin nutrient key (camelCase) -> our column name. Values in the food-log
+# payload are stated per serving definition; consumed = value * servingQty.
+_NUTRITION_NUTRIENTS = {
+    "calories": "calories",
+    "protein": "protein",
+    "fat": "fat",
+    "carbs": "carbs",
+    "fiber": "fiber",
+    "sugar": "sugar",
+    "addedSugars": "added_sugars",
+    "saturatedFat": "saturated_fat",
+    "monounsaturatedFat": "monounsaturated_fat",
+    "polyunsaturatedFat": "polyunsaturated_fat",
+    "transFat": "trans_fat",
+    "cholesterol": "cholesterol",
+    "sodium": "sodium",
+    "potassium": "potassium",
+    "calcium": "calcium",
+    "iron": "iron",
+    "vitaminA": "vitamin_a",
+    "vitaminC": "vitamin_c",
+    "vitaminD": "vitamin_d",
+}
+
+
+def _extract_nutrition_daily(data: Any, cal_date: str = None) -> list[dict]:
+    """Pull the day's consumed totals from a /nutrition-service/food/logs payload.
+
+    Returns at most one record. Days with no logged intake (no
+    dailyNutritionContent) are skipped so the table stays free of empty rows.
+    """
+    if isinstance(data, list):
+        out: list[dict] = []
+        for item in data:
+            out.extend(_extract_nutrition_daily(item, cal_date))
+        return out
+    if not isinstance(data, dict):
+        return []
+    content = data.get("dailyNutritionContent")
+    if not isinstance(content, dict) or content.get("calories") is None:
+        return []
+    d = cal_date or data.get("mealDate") or data.get("calendarDate") or data.get("date")
+    if not d:
+        return []
+    return [
+        {
+            "calendar_date": d,
+            "calories": content.get("calories"),
+            "protein": content.get("protein"),
+            "fat": content.get("fat"),
+            "carbs": content.get("carbs"),
+            "raw_json": json.dumps(data),
+        }
+    ]
+
+
+def _extract_nutrition_food_log(data: Any, cal_date: str = None) -> list[dict]:
+    """Flatten mealDetails[].loggedFoods[] into one consumed-scaled row per
+    logged food. Nutrient values are multiplied by servingQty so each column
+    is the amount actually consumed (validated to sum to the daily totals)."""
+    if isinstance(data, list):
+        out: list[dict] = []
+        for item in data:
+            out.extend(_extract_nutrition_food_log(item, cal_date))
+        return out
+    if not isinstance(data, dict):
+        return []
+
+    d = cal_date or data.get("mealDate") or data.get("calendarDate") or data.get("date")
+    rows: list[dict] = []
+    for meal in data.get("mealDetails", []) or []:
+        if not isinstance(meal, dict):
+            continue
+        for lf in meal.get("loggedFoods", []) or []:
+            if not isinstance(lf, dict):
+                continue
+            log_id = lf.get("logId")
+            if not log_id:
+                continue
+            meta = lf.get("foodMetaData") or {}
+            nc = lf.get("nutritionContent") or {}
+            qty = lf.get("servingQty")
+            mult = qty if isinstance(qty, (int, float)) else 1
+
+            row = {
+                "log_id": log_id,
+                "calendar_date": d,
+                "logged_at": lf.get("logTimestamp"),
+                "meal_time": lf.get("mealTime"),
+                "food_name": meta.get("foodName"),
+                "brand_name": meta.get("brandName"),
+                "food_type": meta.get("foodType"),
+                "food_source": meta.get("source"),
+                "food_id": lf.get("id") or meta.get("foodId"),
+                "serving_qty": qty,
+                "serving_unit": nc.get("servingUnit"),
+                "serving_base_units": nc.get("numberOfUnits"),
+                "is_favorite": 1 if lf.get("isFavorite") else 0,
+                "raw_json": json.dumps(lf),
+            }
+            for src, col in _NUTRITION_NUTRIENTS.items():
+                v = nc.get(src)
+                row[col] = round(v * mult, 4) if isinstance(v, (int, float)) else None
+            rows.append(row)
+    return rows
+
+
+def upsert_nutrition_daily(conn: sqlite3.Connection, record: dict) -> None:
+    d = record.get("calendar_date")
+    if not d:
+        return
+    conn.execute(
+        """INSERT OR REPLACE INTO nutrition_daily
+           (calendar_date, calories, protein, fat, carbs, raw_json)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            d,
+            record.get("calories"),
+            record.get("protein"),
+            record.get("fat"),
+            record.get("carbs"),
+            record.get("raw_json"),
+        ),
+    )
+
+
+_NUTRITION_FOOD_COLUMNS = [
+    "log_id", "calendar_date", "logged_at", "meal_time", "food_name",
+    "brand_name", "food_type", "food_source", "food_id", "serving_qty",
+    "serving_unit", "serving_base_units", "is_favorite", "calories",
+    "protein", "fat", "carbs", "fiber", "sugar", "added_sugars",
+    "saturated_fat", "monounsaturated_fat", "polyunsaturated_fat",
+    "trans_fat", "cholesterol", "sodium", "potassium", "calcium", "iron",
+    "vitamin_a", "vitamin_c", "vitamin_d", "raw_json",
+]
+
+
+def upsert_nutrition_food_log(conn: sqlite3.Connection, record: dict) -> None:
+    if not record.get("log_id"):
+        return
+    placeholders = ", ".join("?" for _ in _NUTRITION_FOOD_COLUMNS)
+    conn.execute(
+        f"INSERT OR REPLACE INTO nutrition_food_log "
+        f"({', '.join(_NUTRITION_FOOD_COLUMNS)}) VALUES ({placeholders})",
+        tuple(record.get(c) for c in _NUTRITION_FOOD_COLUMNS),
+    )
+
+
 def upsert_endurance_score(conn: sqlite3.Connection, record: dict, cal_date: str = None) -> None:
     d = cal_date or record.get("calendarDate") or record.get("date")
     if not d:
@@ -3286,6 +3479,14 @@ def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str
         elif name in ("blood_pressure", "blood_pressure_rest"):
             for rec in records:
                 upsert_blood_pressure(conn, rec)
+                count += 1
+
+        elif name == "nutrition":
+            for rec in _extract_nutrition_daily(data, cal_date):
+                upsert_nutrition_daily(conn, rec)
+                count += 1
+            for rec in _extract_nutrition_food_log(data, cal_date):
+                upsert_nutrition_food_log(conn, rec)
                 count += 1
 
         elif name in ("calories", "nutrition_meals"):
