@@ -677,6 +677,18 @@ CREATE TABLE IF NOT EXISTS sync_log (
     created_at          TEXT DEFAULT (datetime('now'))
 );
 
+-- Tracks which FIT archives have had their trackpoints parsed, so a sync can
+-- reconcile files already on disk (e.g. after wiping the DB but keeping fit/)
+-- without re-parsing every run — including activities that legitimately have
+-- no GPS trackpoints (recorded as 'skipped').
+CREATE TABLE IF NOT EXISTS fit_files (
+    filename            TEXT PRIMARY KEY,
+    activity_id         INTEGER,
+    status              TEXT,
+    point_count         INTEGER,
+    parsed_at           TEXT DEFAULT (datetime('now'))
+);
+
 -- =========================================================================
 -- Indexes
 -- =========================================================================
@@ -3119,6 +3131,18 @@ def _extract_calories_records(data: Any, cal_date: str = None) -> list[dict]:
                 return [{**data, "calendarDate": record_date, "consumedKilocalories": sum(meal_calories)}]
 
     return []
+
+
+def record_fit_parse(conn, filename: str, activity_id, status: str, point_count: int) -> None:
+    """Record that a FIT archive has been parsed for trackpoints. Keyed by
+    filename so a reconciliation pass can skip files already handled — including
+    GPS-less activities (``status='skipped'``) that would otherwise be re-parsed
+    on every sync because they never land rows in activity_trackpoints."""
+    conn.execute(
+        "INSERT OR REPLACE INTO fit_files (filename, activity_id, status, point_count, parsed_at) "
+        "VALUES (?, ?, ?, ?, datetime('now'))",
+        (filename, activity_id, status, point_count),
+    )
 
 
 def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str = None) -> int:
