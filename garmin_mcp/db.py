@@ -1529,6 +1529,10 @@ def upsert_running_dynamics(conn: sqlite3.Connection, aid: int, record: dict) ->
 
 
 def upsert_daily_summary(conn: sqlite3.Connection, record: dict) -> None:
+    # A daily summary is keyed by its date; without one the row is unqueryable
+    # junk (calendar_date NULL) and only pollutes the table. Skip it.
+    if not (record.get("calendarDate") or "").strip():
+        return
     conn.execute(
         """
         INSERT OR REPLACE INTO daily_summary (
@@ -3121,6 +3125,81 @@ def _extract_calories_records(data: Any, cal_date: str = None) -> list[dict]:
     return []
 
 
+# ── Empty-day filtering ──────────────────────────────────────────────────
+# Garmin returns a row for every queried day even when the device recorded
+# nothing: every measurement field comes back null while identifier, goal and
+# default fields stay populated (e.g. ``weekGoal``, ``goalInML``,
+# ``chronologicalAge``, and the ``netRemainingKilocalories: 0.0`` trap). Writing
+# these placeholder rows inflates the database — most visibly with years of
+# empty days from before the account existed. For each daily endpoint we list
+# the API fields that carry an actual measurement; a record is written only when
+# at least one of them holds real data. Endpoints absent from the map are never
+# filtered, so non-daily payloads (activities, sleep, profile, …) pass through
+# untouched.
+
+_DAILY_SIGNAL_FIELDS = {
+    "heart_rate": ("restingHeartRate", "minHeartRate", "maxHeartRate", "heartRateValues"),
+    "heart_rate_detail": ("restingHeartRate", "minHeartRate", "maxHeartRate", "heartRateValues"),
+    "stress": ("avgStressLevel", "maxStressLevel", "stressValuesArray"),
+    "spo2": ("averageSpO2", "lowestSpO2", "latestSpO2", "spo2ValuesArray"),
+    "respiration": (
+        "avgWakingRespirationValue",
+        "avgSleepRespirationValue",
+        "lowestRespirationValue",
+        "highestRespirationValue",
+        "respirationValuesArray",
+    ),
+    "floors": ("floorValuesArray",),
+    "intensity_minutes": ("moderateMinutes", "vigorousMinutes", "weeklyTotal", "imValuesArray"),
+    "intensity_minutes_weekly": ("moderateMinutes", "vigorousMinutes", "weeklyTotal", "imValuesArray"),
+    "hydration": ("valueInML", "sweatLossInML", "activityIntakeInML"),
+    "daily_movement": ("movementValues",),
+    "training_status_daily": ("latestTrainingStatusData",),
+    "training_status_weekly": ("latestTrainingStatusData",),
+    "training_status": ("latestTrainingStatusData",),
+}
+
+
+def _has_value(v) -> bool:
+    """A field counts as real data when it's a non-empty container or any
+    non-None scalar — ``0`` and ``False`` are genuine measurements, so only
+    ``None`` and empty list/dict/str are treated as absent."""
+    if v is None:
+        return False
+    if isinstance(v, (list, dict, str)):
+        return len(v) > 0
+    return True
+
+
+def _daily_record_has_data(name: str, rec) -> bool:
+    """Return True if a daily record carries real measurements, or if its
+    endpoint isn't a filterable daily one. False marks an all-null placeholder
+    day that should not be written."""
+    if not isinstance(rec, dict):
+        return True
+    if name == "daily_summary":
+        # Garmin's own flags are the only reliable signal: an empty day still
+        # carries identifiers and ``netRemainingKilocalories: 0.0``.
+        return bool(
+            rec.get("includesWellnessData") or rec.get("includesActivityData") or rec.get("includesCalorieConsumedData")
+        )
+    if name in ("body_battery_events", "body_battery_stress"):
+        # Time series nested under bodyBattery/stress with a constant "labels"
+        # list and a "data" list that is empty on void days.
+        bb = rec.get("bodyBattery") or {}
+        st = rec.get("stress") or {}
+        return bool(bb.get("data") or st.get("data"))
+    if name == "fitness_age":
+        # Empty days return every component flagged ``stale``; real data has at
+        # least one component that isn't.
+        comps = rec.get("components") or {}
+        return any(isinstance(c, dict) and not c.get("stale") for c in comps.values())
+    signals = _DAILY_SIGNAL_FIELDS.get(name)
+    if not signals:
+        return True
+    return any(_has_value(rec.get(f)) for f in signals)
+
+
 def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str = None) -> int:
     """Route fetched data to the correct table and upsert it.
 
@@ -3150,6 +3229,13 @@ def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str
         data = _unwrap_gql_data(data)
 
     records = _ensure_list(data)
+
+    # Drop placeholder rows for days Garmin has no recorded data for. Non-daily
+    # endpoints (and any record carrying real measurements) pass through.
+    records = [r for r in records if _daily_record_has_data(name, r)]
+    if not records:
+        return 0
+
     count = 0
 
     try:
