@@ -3000,6 +3000,12 @@ def _unwrap_gql_data(data):
     if not isinstance(data, dict):
         return data
 
+    # A GraphQL error-only response (validation/execution errors with no data)
+    # must not be stored as if it were a record — otherwise every failing day
+    # lands a junk row (see the stale healthStatusSummary query).
+    if data.get("errors") and not data.get("data"):
+        return []
+
     # Handle { data: { scalar: ... } }
     if "data" in data and isinstance(data["data"], dict):
         data = data["data"]
