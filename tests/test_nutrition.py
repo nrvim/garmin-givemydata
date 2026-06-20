@@ -111,13 +111,39 @@ class TestSchema:
 
         food = _cols(temp_db, "nutrition_food_log")
         for col in (
-            "log_id", "calendar_date", "logged_at", "meal_time", "food_name",
-            "brand_name", "food_type", "food_source", "food_id", "serving_qty",
-            "serving_unit", "serving_base_units", "is_favorite", "calories",
-            "protein", "fat", "carbs", "fiber", "sugar", "added_sugars",
-            "saturated_fat", "monounsaturated_fat", "polyunsaturated_fat",
-            "trans_fat", "cholesterol", "sodium", "potassium", "calcium",
-            "iron", "vitamin_a", "vitamin_c", "vitamin_d", "raw_json",
+            "log_id",
+            "calendar_date",
+            "logged_at",
+            "meal_time",
+            "food_name",
+            "brand_name",
+            "food_type",
+            "food_source",
+            "food_id",
+            "serving_qty",
+            "serving_unit",
+            "serving_base_units",
+            "is_favorite",
+            "calories",
+            "protein",
+            "fat",
+            "carbs",
+            "fiber",
+            "sugar",
+            "added_sugars",
+            "saturated_fat",
+            "monounsaturated_fat",
+            "polyunsaturated_fat",
+            "trans_fat",
+            "cholesterol",
+            "sodium",
+            "potassium",
+            "calcium",
+            "iron",
+            "vitamin_a",
+            "vitamin_c",
+            "vitamin_d",
+            "raw_json",
         ):
             assert col in food, f"Missing column: {col}"
 
@@ -135,9 +161,43 @@ class TestExtraction:
 
     def test_daily_skipped_when_no_content(self):
         assert _extract_nutrition_daily({"mealDate": "2026-05-15"}, None) == []
-        assert _extract_nutrition_daily(
-            {"mealDate": "2026-05-15", "dailyNutritionContent": {}}, None
-        ) == []
+        assert _extract_nutrition_daily({"mealDate": "2026-05-15", "dailyNutritionContent": {}}, None) == []
+
+    def test_daily_skipped_when_empty_placeholder(self):
+        # Regression: accounts/days with no logged food return a
+        # dailyNutritionContent block with calories=0 and null macros (confirmed
+        # against a live account). That is an empty day and must NOT be written
+        # as a calories=0 placeholder row (same pollution fixed for #57).
+        placeholder = {
+            "mealDate": "2025-06-01",
+            "dailyNutritionContent": {"calories": 0, "protein": None, "fat": None, "carbs": None},
+            "mealDetails": [],
+        }
+        assert _extract_nutrition_daily(placeholder, None) == []
+        # A day with real intake (calories > 0) is still kept.
+        real = {"mealDate": "2025-06-02", "dailyNutritionContent": {"calories": 1500, "protein": 80}}
+        assert len(_extract_nutrition_daily(real, None)) == 1
+
+    def test_serving_qty_zero_does_not_zero_macros(self):
+        payload = {
+            "mealDate": "2026-05-15",
+            "mealDetails": [
+                {
+                    "loggedFoods": [
+                        {
+                            "logId": "z",
+                            "servingQty": 0,
+                            "foodMetaData": {"foodName": "Zero"},
+                            "nutritionContent": {"calories": 120},
+                        }
+                    ]
+                }
+            ],
+        }
+        rows = _extract_nutrition_food_log(payload, None)
+        assert len(rows) == 1
+        # servingQty=0 must not zero out the consumed amount (defaults to mult=1).
+        assert rows[0]["calories"] == 120
 
     def test_food_rows_scaled_by_serving_qty(self):
         rows = {r["log_id"]: r for r in _extract_nutrition_food_log(SAMPLE, None)}
@@ -189,16 +249,28 @@ class TestSaveToDb:
         save_to_db(temp_db, "nutrition", SAMPLE, cal_date="2026-05-15")
         save_to_db(temp_db, "nutrition", SAMPLE, cal_date="2026-05-15")
 
-        assert temp_db.execute(
-            "SELECT COUNT(*) FROM nutrition_daily"
-        ).fetchone()[0] == 1
-        assert temp_db.execute(
-            "SELECT COUNT(*) FROM nutrition_food_log"
-        ).fetchone()[0] == 2
+        assert temp_db.execute("SELECT COUNT(*) FROM nutrition_daily").fetchone()[0] == 1
+        assert temp_db.execute("SELECT COUNT(*) FROM nutrition_food_log").fetchone()[0] == 2
 
     def test_raw_json_roundtrips(self, temp_db):
         save_to_db(temp_db, "nutrition", SAMPLE, cal_date="2026-05-15")
-        raw = temp_db.execute(
-            "SELECT raw_json FROM nutrition_food_log WHERE log_id = 'log-aaa'"
-        ).fetchone()[0]
+        raw = temp_db.execute("SELECT raw_json FROM nutrition_food_log WHERE log_id = 'log-aaa'").fetchone()[0]
         assert json.loads(raw)["foodMetaData"]["foodName"] == "Energy Bar"
+
+    def test_non_connect_plus_writes_nothing(self, temp_db):
+        # The common case: an account without Garmin Connect+ food logging. The
+        # endpoint returns empty/null/placeholder bodies — none must write a row
+        # or crash the per-day sync.
+        for payload in (
+            {},
+            None,
+            {"mealDate": "2026-06-19", "dailyNutritionContent": None},
+            {
+                "mealDate": "2026-06-19",
+                "dailyNutritionContent": {"calories": 0, "protein": None, "fat": None, "carbs": None},
+                "mealDetails": [],
+            },
+        ):
+            save_to_db(temp_db, "nutrition", payload, cal_date="2026-06-19")
+        assert temp_db.execute("SELECT COUNT(*) FROM nutrition_daily").fetchone()[0] == 0
+        assert temp_db.execute("SELECT COUNT(*) FROM nutrition_food_log").fetchone()[0] == 0

@@ -2562,7 +2562,14 @@ def _extract_nutrition_daily(data: Any, cal_date: str = None) -> list[dict]:
     if not isinstance(data, dict):
         return []
     content = data.get("dailyNutritionContent")
-    if not isinstance(content, dict) or content.get("calories") is None:
+    if not isinstance(content, dict):
+        return []
+    # Skip empty placeholder days. Accounts/days with no logged food still return
+    # a dailyNutritionContent block with calories=0 (or None) and null macros
+    # (confirmed against a live account); writing those would refill the table
+    # with empty rows — the same pollution fixed for daily_summary in #57.
+    cals = content.get("calories")
+    if not cals and content.get("protein") is None and content.get("fat") is None and content.get("carbs") is None:
         return []
     d = cal_date or data.get("mealDate") or data.get("calendarDate") or data.get("date")
     if not d:
@@ -2605,7 +2612,9 @@ def _extract_nutrition_food_log(data: Any, cal_date: str = None) -> list[dict]:
             meta = lf.get("foodMetaData") or {}
             nc = lf.get("nutritionContent") or {}
             qty = lf.get("servingQty")
-            mult = qty if isinstance(qty, (int, float)) else 1
+            # Scale by servingQty; guard against bool (isinstance(True, int)) and
+            # non-positive quantities, which would zero out or invert the macros.
+            mult = qty if isinstance(qty, (int, float)) and not isinstance(qty, bool) and qty > 0 else 1
 
             row = {
                 "log_id": log_id,
@@ -2650,13 +2659,39 @@ def upsert_nutrition_daily(conn: sqlite3.Connection, record: dict) -> None:
 
 
 _NUTRITION_FOOD_COLUMNS = [
-    "log_id", "calendar_date", "logged_at", "meal_time", "food_name",
-    "brand_name", "food_type", "food_source", "food_id", "serving_qty",
-    "serving_unit", "serving_base_units", "is_favorite", "calories",
-    "protein", "fat", "carbs", "fiber", "sugar", "added_sugars",
-    "saturated_fat", "monounsaturated_fat", "polyunsaturated_fat",
-    "trans_fat", "cholesterol", "sodium", "potassium", "calcium", "iron",
-    "vitamin_a", "vitamin_c", "vitamin_d", "raw_json",
+    "log_id",
+    "calendar_date",
+    "logged_at",
+    "meal_time",
+    "food_name",
+    "brand_name",
+    "food_type",
+    "food_source",
+    "food_id",
+    "serving_qty",
+    "serving_unit",
+    "serving_base_units",
+    "is_favorite",
+    "calories",
+    "protein",
+    "fat",
+    "carbs",
+    "fiber",
+    "sugar",
+    "added_sugars",
+    "saturated_fat",
+    "monounsaturated_fat",
+    "polyunsaturated_fat",
+    "trans_fat",
+    "cholesterol",
+    "sodium",
+    "potassium",
+    "calcium",
+    "iron",
+    "vitamin_a",
+    "vitamin_c",
+    "vitamin_d",
+    "raw_json",
 ]
 
 
@@ -2665,8 +2700,7 @@ def upsert_nutrition_food_log(conn: sqlite3.Connection, record: dict) -> None:
         return
     placeholders = ", ".join("?" for _ in _NUTRITION_FOOD_COLUMNS)
     conn.execute(
-        f"INSERT OR REPLACE INTO nutrition_food_log "
-        f"({', '.join(_NUTRITION_FOOD_COLUMNS)}) VALUES ({placeholders})",
+        f"INSERT OR REPLACE INTO nutrition_food_log ({', '.join(_NUTRITION_FOOD_COLUMNS)}) VALUES ({placeholders})",
         tuple(record.get(c) for c in _NUTRITION_FOOD_COLUMNS),
     )
 
