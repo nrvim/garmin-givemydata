@@ -1,22 +1,93 @@
 name: Update Homebrew Formula
 
+# Homebrew's `brew update-python-resources` refuses to resolve any package
+# (including ours) uploaded to PyPI within the last ~24h — it pins pip to
+# `--uploaded-prior-to = now - RELEASE_COOLDOWN_SECONDS` with no override. So the
+# formula cannot be regenerated immediately on release. Instead of failing on
+# every release, this workflow runs on a schedule and reconciles the tap to the
+# latest PyPI version once that cooldown has passed — i.e. roughly a day after a
+# release. A cheap Ubuntu job gates the expensive macOS job so idle runs (no new
+# version, or still in cooldown) never spin up a macOS runner.
+
 on:
-  release:
-    types: [published]
-  # Allow regenerating the formula for an already-published version without
-  # cutting a new release (e.g. to repair a broken formula).
+  schedule:
+    # Twice a day; the first run after the ~24h cooldown elapses does the update.
+    - cron: "0 */12 * * *"
+  # Manual trigger for an explicit version (still subject to the cooldown gate).
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish (e.g. 0.1.11). Defaults to the latest release tag."
+        description: "Version to publish (e.g. 0.1.13). Defaults to the latest PyPI release."
         required: false
 
 permissions:
   contents: read
 
 jobs:
+  check:
+    name: Check PyPI version and cooldown
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      url: ${{ steps.resolve.outputs.url }}
+      sha256: ${{ steps.resolve.outputs.sha256 }}
+      ready: ${{ steps.resolve.outputs.ready }}
+      changed: ${{ steps.current.outputs.changed }}
+    steps:
+      - name: Resolve target version, sdist, and cooldown status
+        id: resolve
+        run: |
+          python3 - "${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT" <<'PY'
+          import sys, json, urllib.request, datetime
+          version = sys.argv[1].strip()
+          base = "https://pypi.org/pypi/garmin-givemydata"
+          if not version:
+              version = json.loads(urllib.request.urlopen(base + "/json").read())["info"]["version"]
+          data = json.loads(urllib.request.urlopen(f"{base}/{version}/json").read())
+          sdist = next(u for u in data["urls"] if u["filename"].endswith(".tar.gz"))
+          uploaded = datetime.datetime.fromisoformat(sdist["upload_time_iso_8601"].replace("Z", "+00:00"))
+          age_h = (datetime.datetime.now(datetime.timezone.utc) - uploaded).total_seconds() / 3600
+          # >= 25h gives a 1h margin over Homebrew's ~24h RELEASE_COOLDOWN.
+          ready = age_h >= 25
+          print(f"version={version}")
+          print(f"url={sdist['url']}")
+          print(f"sha256={sdist['digests']['sha256']}")
+          print(f"age_hours={age_h:.1f}")
+          print(f"ready={'true' if ready else 'false'}")
+          PY
+
+      - name: Compare against the formula currently in the tap
+        id: current
+        run: |
+          VERSION="${{ steps.resolve.outputs.version }}"
+          CURRENT="$(curl -fsSL \
+            -H 'Accept: application/vnd.github.raw' \
+            -H 'Authorization: token ${{ secrets.HOMEBREW_TAP_TOKEN }}' \
+            https://api.github.com/repos/nrvim/homebrew-tap/contents/Formula/garmin-givemydata.rb \
+            | grep -oE 'garmin_givemydata-[0-9.]+\.tar\.gz' | head -1 || true)"
+          echo "Formula currently serves: ${CURRENT:-<none>} ; target: garmin_givemydata-${VERSION}.tar.gz"
+          if [ "$CURRENT" = "garmin_givemydata-${VERSION}.tar.gz" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Status
+        run: |
+          echo "version=${{ steps.resolve.outputs.version }}"
+          echo "age_hours=${{ steps.resolve.outputs.age_hours }}"
+          echo "ready (cooldown passed)=${{ steps.resolve.outputs.ready }}"
+          echo "changed (formula behind)=${{ steps.current.outputs.changed }}"
+          if [ "${{ steps.resolve.outputs.ready }}" != "true" ]; then
+            echo "::notice::v${{ steps.resolve.outputs.version }} is still within Homebrew's ~24h resource-resolution cooldown; will update on a later scheduled run."
+          elif [ "${{ steps.current.outputs.changed }}" != "true" ]; then
+            echo "::notice::Formula already at v${{ steps.resolve.outputs.version }}; nothing to do."
+          fi
+
   update-formula:
     name: Update Homebrew tap
+    needs: check
+    if: needs.check.outputs.ready == 'true' && needs.check.outputs.changed == 'true'
     # macOS runner: Homebrew is preinstalled, which `brew update-python-resources`
     # needs to resolve and pin the full Python dependency tree.
     runs-on: macos-latest
@@ -24,39 +95,6 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-
-      - name: Determine version
-        id: version
-        run: |
-          VERSION="${{ github.event.inputs.version }}"
-          if [ -z "$VERSION" ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Targeting version: $VERSION"
-
-      - name: Get release info from PyPI
-        id: pypi
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          # Retry up to 5 times waiting for PyPI to index the new version.
-          for i in 1 2 3 4 5; do
-            echo "Attempt $i: checking PyPI for version $VERSION..."
-            if python3 -c "
-          import urllib.request, json
-          data = json.loads(urllib.request.urlopen('https://pypi.org/pypi/garmin-givemydata/${VERSION}/json').read())
-          for u in data['urls']:
-              if u['filename'].endswith('.tar.gz'):
-                  print('url=' + u['url'])
-                  print('sha256=' + u['digests']['sha256'])
-                  break
-          " >> "$GITHUB_OUTPUT" 2>/dev/null; then
-              echo "Found on PyPI!"
-              break
-            fi
-            echo "Not yet indexed, waiting 60s..."
-            sleep 60
-          done
 
       - name: Clone homebrew-tap into Homebrew's tap directory
         run: |
@@ -73,8 +111,8 @@ jobs:
 
             desc "Get your Garmin Connect data back — 48-table SQLite + MCP server"
             homepage "https://github.com/nrvim/garmin-givemydata"
-            url "${{ steps.pypi.outputs.url }}"
-            sha256 "${{ steps.pypi.outputs.sha256 }}"
+            url "${{ needs.check.outputs.url }}"
+            sha256 "${{ needs.check.outputs.sha256 }}"
             license "AGPL-3.0-only"
 
             depends_on "python@3.12"
@@ -105,6 +143,7 @@ jobs:
         run: |
           # Resolves the full dependency tree from PyPI and writes a pinned
           # `resource` block (url + sha256) for every transitive dependency.
+          # Succeeds now because the release is past Homebrew's ~24h cooldown.
           brew update-python-resources nrvim/homebrew-tap/garmin-givemydata
 
       - name: Verify formula parses
@@ -122,5 +161,5 @@ jobs:
             echo "No changes"
             exit 0
           fi
-          git commit -m "bump: garmin-givemydata v${{ steps.version.outputs.version }}"
+          git commit -m "bump: garmin-givemydata v${{ needs.check.outputs.version }}"
           git push
