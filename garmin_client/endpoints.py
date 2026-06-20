@@ -142,11 +142,13 @@ def daily_graphql(display_name: str, date: str) -> dict:
         "sleep_detail": f'query{{sleepScalar(date:"{date}", sleepOnly: false)}}',
         "training_status_daily": f'query{{trainingStatusDailyScalar(calendarDate:"{date}")}}',
         "daily_events": f'query{{dailyEventsScalar(date:"{date}")}}',
-        "health_status": f'''query {{
-            healthStatusSummary(calendarDate:"{date}") {{
-                calendarDate overallStatus metricsMap
-            }}
-        }}''',
+        # ``HealthStatusSummaryDTO`` no longer exposes ``calendarDate``,
+        # ``overallStatus`` or ``metricsMap`` (Garmin renamed the schema); asking
+        # for them returns a FieldUndefined validation error for every day, which
+        # was being stored as a row. The current shape is a ``metrics`` list of
+        # ``{type, status, value}``. Days without data return a null node, which
+        # the GraphQL unwrapper drops, so nothing is written.
+        "health_status": f'query{{healthStatusSummary(calendarDate:"{date}"){{metrics{{type status value}}}}}}',
         "activity_trends_all": f'query{{activityTrendsScalar(activityType:"all",date:"{date}")}}',
         "activity_trends_running": f'query{{activityTrendsScalar(activityType:"running",date:"{date}")}}',
         "activity_trends_cycling": f'query{{activityTrendsScalar(activityType:"cycling",date:"{date}")}}',
