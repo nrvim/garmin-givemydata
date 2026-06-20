@@ -27,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from garmin_client import GarminClient
-from garmin_mcp.db import get_connection, init_db, save_to_db
+from garmin_mcp.db import get_connection, init_db, record_fit_parse, save_to_db
 from garmin_mcp.db import query as db_query
 
 
@@ -206,12 +206,15 @@ def _save_trackpoints_from_fit(conn, fit_path: Path) -> tuple[str, int]:
     try:
         activity_id, trackpoints = parse_trackpoints_from_fit_archive(fit_path)
     except Exception:
+        record_fit_parse(conn, fit_path.name, None, "failed", 0)
         return "failed", 0
 
     if activity_id is None or not trackpoints:
+        record_fit_parse(conn, fit_path.name, activity_id, "skipped", 0)
         return "skipped", 0
 
     count = save_to_db(conn, "activity_trackpoints", trackpoints, cal_date=str(activity_id))
+    record_fit_parse(conn, fit_path.name, activity_id, "ingested", count)
     return "ingested", count
 
 
@@ -229,6 +232,37 @@ def _parse_trackpoints_from_fit_dir(conn, fit_dir: Path) -> dict[str, int]:
         return summary
 
     for fit_path in sorted(fit_dir.glob("*.zip")):
+        summary["targeted"] += 1
+        status, count = _save_trackpoints_from_fit(conn, fit_path)
+        if status == "ingested":
+            summary["ingested"] += 1
+            summary["rows"] += count
+        elif status == "skipped":
+            summary["skipped"] += 1
+        else:
+            summary["failed"] += 1
+
+    return summary
+
+
+def _backfill_unparsed_fit(conn, fit_dir: Path) -> dict[str, int]:
+    """Parse FIT archives present on disk but not yet recorded in ``fit_files``.
+
+    Covers files that exist without having been parsed into this database —
+    e.g. after wiping garmin.db but keeping fit/, restoring fit/ from another
+    machine, or an interrupted run. Idempotent: once a file is recorded (even as
+    'skipped' for a GPS-less activity) it is not parsed again.
+    """
+    summary = {"targeted": 0, "ingested": 0, "skipped": 0, "failed": 0, "rows": 0}
+
+    if not fit_dir.exists():
+        return summary
+
+    parsed = {r["filename"] for r in db_query(conn, "SELECT filename FROM fit_files")}
+
+    for fit_path in sorted(fit_dir.glob("*.zip")):
+        if fit_path.name in parsed:
+            continue
         summary["targeted"] += 1
         status, count = _save_trackpoints_from_fit(conn, fit_path)
         if status == "ingested":
@@ -655,13 +689,6 @@ examples:
                 )
 
                 downloaded = 0
-                trackpoint_summary = {
-                    "targeted": 0,
-                    "ingested": 0,
-                    "skipped": 0,
-                    "failed": 0,
-                    "rows": 0,
-                }
                 for i, (aid, name, date_str) in enumerate(new_activities):
                     safe_name = ""
                     if name:
@@ -679,16 +706,6 @@ examples:
                         with open(filepath, "wb") as f:
                             f.write(data)
                         downloaded += 1
-                        if args.parse_trackpoints:
-                            trackpoint_summary["targeted"] += 1
-                            status, count = _save_trackpoints_from_fit(conn, filepath)
-                            if status == "ingested":
-                                trackpoint_summary["ingested"] += 1
-                                trackpoint_summary["rows"] += count
-                            elif status == "skipped":
-                                trackpoint_summary["skipped"] += 1
-                            else:
-                                trackpoint_summary["failed"] += 1
 
                     if downloaded > 0 and downloaded % 10 == 0:
                         print(f"  {downloaded}/{len(new_activities)} downloaded...")
@@ -697,10 +714,16 @@ examples:
                         time.sleep(1)
 
                 print(f"  FIT files: {downloaded} downloaded to {fit_dir}/")
-                if args.parse_trackpoints and trackpoint_summary["targeted"]:
-                    _print_trackpoint_summary(trackpoint_summary, prefix="  ")
             else:
                 print(f"\nFIT files: all {len(existing_fits)} already downloaded")
+
+            # Parse trackpoints for every FIT on disk not yet recorded in the
+            # database — covers freshly downloaded files and any kept from a
+            # previous database (e.g. a wipe + resync that retained fit/).
+            if args.parse_trackpoints:
+                summary = _backfill_unparsed_fit(conn, fit_dir)
+                if summary["targeted"]:
+                    _print_trackpoint_summary(summary, prefix="  ")
 
     finally:
         client.close()
