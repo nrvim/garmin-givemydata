@@ -1,12 +1,14 @@
 """Regression tests for garmin_mcp.export."""
 
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import garmin_givemydata
 from garmin_mcp import export
 
 
@@ -76,6 +78,49 @@ class TestExportJsonTables(unittest.TestCase):
             self.assertEqual(payload[0]["__activity_id"], 12345)
             self.assertEqual(payload[0]["__avg_hr"], 135)
             self.assertNotIn("items", payload[0])
+
+
+class TestExportCredentialResolution(unittest.TestCase):
+    """Regression for issue #53: ``--export-gpx`` resolved ``.env`` relative to
+    the installed package (``Path(__file__).parent.parent``) instead of the data
+    directory, so pip/pipx/brew installs printed "Credentials not found" because
+    no ``.env`` sits next to the package. The download path must load credentials
+    via the main module's ``load_env()`` (which reads ``DATA_DIR/.env``)."""
+
+    def test_credentials_loaded_via_data_dir_load_env(self):
+        captured = {}
+
+        class FakeClient:
+            def __init__(self, email=None, password=None, profile_dir=None, **kwargs):
+                captured["email"] = email
+                captured["profile_dir"] = profile_dir
+
+            def login(self):
+                return False  # stop before any network/browser
+
+            def close(self):
+                pass
+
+        def fake_load_env():
+            # Simulates load_env() reading DATA_DIR/.env into the environment.
+            os.environ["GARMIN_EMAIL"] = "datadir@example.com"
+            os.environ["GARMIN_PASSWORD"] = "from-data-dir"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "gpx"
+            with (
+                patch("garmin_client.GarminClient", FakeClient),
+                patch.object(garmin_givemydata, "load_env", fake_load_env),
+            ):
+                os.environ.pop("GARMIN_EMAIL", None)
+                os.environ.pop("GARMIN_PASSWORD", None)
+                # activity_ids given explicitly so no DB lookup is needed.
+                export.download_activity_files(out, file_format="gpx", activity_ids=[123])
+
+        # Credentials must have come from the data-dir loader, proving the path
+        # resolution bug is fixed (otherwise email would be "" -> early return).
+        self.assertEqual(captured.get("email"), "datadir@example.com")
+        self.assertEqual(captured.get("profile_dir"), garmin_givemydata.PROFILE_DIR)
 
 
 if __name__ == "__main__":

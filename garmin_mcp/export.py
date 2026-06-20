@@ -421,16 +421,14 @@ def download_activity_files(
 
     from garmin_client import GarminClient
 
-    project_dir = Path(__file__).parent.parent
-    profile_dir = project_dir / "browser_profile"
+    # Resolve credentials and browser profile from the real data directory
+    # (GARMIN_DATA_DIR / cwd / ~/.garmin-givemydata), not the installed package
+    # location. Reuses the main module's data-dir logic so pip/pipx/brew installs
+    # find the .env that lives next to the database. See issue #53.
+    from garmin_givemydata import PROFILE_DIR, load_env
 
-    env_file = project_dir / ".env"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, value = line.partition("=")
-                os.environ.setdefault(key.strip(), value.strip())
+    load_env()
+    profile_dir = PROFILE_DIR
 
     email = os.environ.get("GARMIN_EMAIL", "")
     password = os.environ.get("GARMIN_PASSWORD", "")
