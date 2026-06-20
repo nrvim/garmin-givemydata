@@ -19,6 +19,10 @@ on:
       version:
         description: "Version to publish (e.g. 0.1.13). Defaults to the latest PyPI release."
         required: false
+      force:
+        description: "Regenerate even if the formula is already at this version (e.g. to repair a broken formula). Still subject to the ~24h cooldown."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -66,7 +70,10 @@ jobs:
             https://api.github.com/repos/nrvim/homebrew-tap/contents/Formula/garmin-givemydata.rb \
             | grep -oE 'garmin_givemydata-[0-9.]+\.tar\.gz' | head -1 || true)"
           echo "Formula currently serves: ${CURRENT:-<none>} ; target: garmin_givemydata-${VERSION}.tar.gz"
-          if [ "$CURRENT" = "garmin_givemydata-${VERSION}.tar.gz" ]; then
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            echo "Force requested — regenerating regardless of the current formula version."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$CURRENT" = "garmin_givemydata-${VERSION}.tar.gz" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
