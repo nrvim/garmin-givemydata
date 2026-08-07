@@ -28,6 +28,21 @@ def _insert_sleep_row(db_path: str, cal_date: str = "2026-04-19"):
     conn.close()
 
 
+def _insert_raw_json(db_path: str, table: str, payload: dict, cal_date: str = "2026-04-19"):
+    conn = _open_conn(db_path)
+    conn.execute(
+        f"INSERT INTO [{table}] (calendar_date, raw_json) VALUES (?, ?)",
+        (cal_date, json.dumps(payload)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _samples(*values):
+    """An array long enough for the prober to treat it as an intraday feed."""
+    return [list(v) for v in values] * 6
+
+
 def test_index_lists_only_row_counts(temp_db_file):
     _insert_sleep_row(temp_db_file)
 
@@ -69,6 +84,10 @@ def test_epoch_ms_table_documents_its_raw_json(temp_db_file):
     """Regression: stressValuesArray is timestamped in epoch milliseconds while
     bodyBattery.data uses local ISO text, so reading one like the other groups
     every sample into its own bucket instead of failing."""
+    _insert_raw_json(
+        temp_db_file, "stress", {"stressValuesArray": _samples([1785874500000, 23])}
+    )
+
     result = _call(temp_db_file, "stress")
 
     assert result["tables"]["stress"]["raw_json"]["$.stressValuesArray"] == "[epoch_ms, stress]"
@@ -77,25 +96,69 @@ def test_epoch_ms_table_documents_its_raw_json(temp_db_file):
 
 
 def test_iso_table_is_not_given_the_epoch_hint(temp_db_file):
+    _insert_raw_json(
+        temp_db_file,
+        "body_battery",
+        {"bodyBattery": {"data": _samples(["2026-04-19T22:03:00.0", 45, 1, 3])}},
+    )
+
     result = _call(temp_db_file, "body_battery")
 
-    assert result["tables"]["body_battery"]["raw_json"]["$.bodyBattery.data"].startswith("[iso_local")
+    shape = result["tables"]["body_battery"]["raw_json"]["$.bodyBattery.data"]
+    assert shape == "[iso_local, level, ?, status]"
     assert "timestamps" not in result
 
 
+def test_shape_follows_the_data_not_a_declared_list(temp_db_file):
+    """The point of reading the shape back: were Garmin to switch a feed from
+    epoch milliseconds to ISO text, a hardcoded note would keep claiming the
+    old format and send every query down the wrong path."""
+    _insert_raw_json(
+        temp_db_file, "stress", {"stressValuesArray": _samples(["2026-04-19T10:00:00.0", 23])}
+    )
+
+    result = _call(temp_db_file, "stress")
+
+    assert result["tables"]["stress"]["raw_json"]["$.stressValuesArray"] == "[iso_local, stress]"
+    assert "timestamps" not in result
+
+
+def test_position_null_in_the_first_sample_is_still_labelled(temp_db_file):
+    """Garmin leaves the leading samples of a feed null; classifying off the
+    first one alone would describe a real reading as an absence."""
+    _insert_raw_json(
+        temp_db_file,
+        "stress",
+        {"bodyBatteryValuesArray": _samples([1785874500000, None, None, 3], [1785874800000, 45, 1, 3])},
+    )
+
+    shape = _call(temp_db_file, "stress")["tables"]["stress"]["raw_json"]["$.bodyBatteryValuesArray"]
+
+    assert shape == "[epoch_ms, level, ?, status]"
+
+
 def test_table_without_intraday_arrays_carries_no_notes(temp_db_file):
+    _insert_sleep_row(temp_db_file)
+
     result = _call(temp_db_file, "sleep")
 
     assert set(result["tables"]["sleep"]) == {"columns", "row_count"}
     assert "timestamps" not in result
 
 
+def test_empty_table_cannot_be_described(temp_db_file):
+    """No stored row, nothing to read the shape from — and nothing to query
+    either, so an absent note costs the caller nothing."""
+    result = _call(temp_db_file, "stress")
+
+    assert "raw_json" not in result["tables"]["stress"]
+
+
 def test_documented_tables_still_exist(temp_db_file):
-    """A note pinned to a renamed or dropped table would silently never show up."""
+    """A caveat pinned to a renamed or dropped table would silently never show up."""
     index = _call(temp_db_file)
     known = set(index["tables"]) | set(index["empty_tables"])
 
-    assert set(server._RAW_JSON_SHAPES) <= known
     assert set(server._RAW_JSON_SENTINELS) <= known
 
 

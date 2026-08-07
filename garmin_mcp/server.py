@@ -25,26 +25,26 @@ _conn.close()
 # garmin_schema
 # ---------------------------------------------------------------------------
 
-# Shape of the intraday arrays buried in raw_json, per table.  Garmin is not
-# consistent here — some feeds timestamp their samples as epoch milliseconds
-# (GMT) and others as local ISO text — so querying one like the other silently
-# produces garbage instead of an error.  Surfaced when the table is asked for
-# by name, i.e. right before its raw_json gets queried.
-_RAW_JSON_SHAPES = {
-    "body_battery": {
-        "$.bodyBattery.data": "[iso_local, level, ?, status]",
-        "$.stress.data": "[iso_local, stress]",
-    },
-    "daily_movement": {"$.movementValues": "[epoch_ms, intensity]"},
-    "floors": {"$.floorValuesArray": "[iso_local_start, iso_local_end, ascended, descended]"},
-    "heart_rate": {"$.heartRateValues": "[epoch_ms, bpm]"},
-    "hrv_timeline": {"$.hrvReadings": "{hrvValue, readingTimeGMT, readingTimeLocal}"},
-    "respiration": {"$.respirationValuesArray": "[epoch_ms, breaths_per_min]"},
-    "spo2": {"$.spo2ValuesArray": "[epoch_ms, spo2, ?]"},
-    "stress": {
-        "$.stressValuesArray": "[epoch_ms, stress]",
-        "$.bodyBatteryValuesArray": "[epoch_ms, level, ?, status]",
-    },
+# The intraday samples live inside raw_json, and Garmin is not consistent about
+# them: some feeds timestamp each sample as epoch milliseconds (GMT), others as
+# local ISO text.  Reading one like the other produces plausible garbage instead
+# of an error, so the shape is read back from a stored row rather than kept in a
+# list here that would silently go stale when the upstream format changes.
+_TS_EPOCH_MS = "epoch_ms"
+_TS_ISO_LOCAL = "iso_local"
+
+# What the non-timestamp positions of each tuple mean — the one thing that
+# cannot be inferred from the data itself.  Applied in order, timestamps skipped.
+_RAW_JSON_FIELDS = {
+    "$.bodyBattery.data": ["level", "?", "status"],
+    "$.bodyBatteryValuesArray": ["level", "?", "status"],
+    "$.floorValuesArray": ["ascended", "descended"],
+    "$.heartRateValues": ["bpm"],
+    "$.movementValues": ["intensity"],
+    "$.respirationValuesArray": ["breaths_per_min"],
+    "$.spo2ValuesArray": ["spo2", "?"],
+    "$.stress.data": ["stress"],
+    "$.stressValuesArray": ["stress"],
 }
 
 _EPOCH_MS_HINT = (
@@ -52,11 +52,80 @@ _EPOCH_MS_HINT = (
     "in seconds for local time. iso_local is already local text — never mix the two."
 )
 
-# Sentinels that look like readings but are not; averaging over them skews the result.
+# Sentinels that look like readings but are not; averaging over them skews the
+# result.  Detecting these would mean scanning every row, so they stay declared.
 _RAW_JSON_SENTINELS = {
     "stress": "stress < 0 means no reading (-1 unmeasurable, -2 off-wrist); filter them out",
     "respiration": "value < 0 means no reading (-1 unmeasurable, -2 off-wrist); filter them out",
 }
+
+# How many samples to look through for a non-null value per tuple position: the
+# first sample of a night often carries nulls where later ones carry readings.
+_SHAPE_SAMPLE_SIZE = 20
+
+
+def _classify(value):
+    """Name a tuple position by what it holds, timestamps first."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)) and value > 1e11:  # ms since epoch, not a reading
+        return _TS_EPOCH_MS
+    if isinstance(value, str) and value[:2] == "20":
+        return _TS_ISO_LOCAL
+    return type(value).__name__
+
+
+def _describe_raw_json(conn, table):
+    """Read the shape of *table*'s intraday arrays back from a stored row."""
+    cols = [c["name"] for c in query(conn, f"PRAGMA table_info([{table}])")]
+    if "raw_json" not in cols:
+        return {}
+    rows = query(conn, f"SELECT raw_json FROM [{table}] WHERE raw_json IS NOT NULL LIMIT 1")
+    if not rows:
+        return {}
+    try:
+        payload = json.loads(rows[0]["raw_json"])
+    except (TypeError, ValueError):
+        return {}
+
+    shapes = {}
+
+    def visit(node, path):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                visit(value, f"{path}.{key}")
+            return
+        if not isinstance(node, list) or len(node) <= 5:
+            return
+        head = node[0]
+        if isinstance(head, dict):
+            shapes[f"$.{path.lstrip('.')}"] = "{" + ", ".join(sorted(head)) + "}"
+        elif isinstance(head, list) and head:
+            shapes[f"$.{path.lstrip('.')}"] = _describe_tuple(node, f"$.{path.lstrip('.')}")
+
+    visit(payload, "")
+    return shapes
+
+
+def _describe_tuple(samples, path):
+    """Label each position of a [ts, value, ...] tuple."""
+    kinds = []
+    for i in range(len(samples[0])):
+        # A position may be null in the first sample but hold a reading later on.
+        kind = next(
+            (k for k in (_classify(s[i]) for s in samples[:_SHAPE_SAMPLE_SIZE] if i < len(s)) if k),
+            "null",
+        )
+        kinds.append(kind)
+
+    labels = list(_RAW_JSON_FIELDS.get(path, []))
+    described = []
+    for kind in kinds:
+        if kind in (_TS_EPOCH_MS, _TS_ISO_LOCAL):
+            described.append(kind)
+        else:
+            described.append(labels.pop(0) if labels else kind)
+    return "[" + ", ".join(described) + "]"
 
 
 @mcp.tool()
@@ -103,12 +172,17 @@ def garmin_schema(tables: str = "") -> str:
                 "columns": [c["name"] for c in cols],
                 "row_count": query(conn, f"SELECT COUNT(*) AS cnt FROM [{name}]")[0]["cnt"],
             }
-            if name in _RAW_JSON_SHAPES:
-                result["tables"][name]["raw_json"] = _RAW_JSON_SHAPES[name]
+            shapes = _describe_raw_json(conn, name)
+            if shapes:
+                result["tables"][name]["raw_json"] = shapes
             if name in _RAW_JSON_SENTINELS:
                 result["tables"][name]["caveat"] = _RAW_JSON_SENTINELS[name]
 
-        if any("epoch_ms" in s for n in wanted for s in _RAW_JSON_SHAPES.get(n, {}).values()):
+        if any(
+            _TS_EPOCH_MS in shape
+            for table in result["tables"].values()
+            for shape in table.get("raw_json", {}).values()
+        ):
             result["timestamps"] = _EPOCH_MS_HINT
 
         return json.dumps(result, separators=(",", ":"))
