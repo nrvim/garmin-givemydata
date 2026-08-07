@@ -169,7 +169,7 @@ The MCP server gives AI assistants deep access to your health data. Every tool r
 | Tool | What It Does |
 |------|-------------|
 | `garmin_sync` | Check data freshness and pull latest data from Garmin — always shows when the last sync happened. Use `refresh=False` to just check status |
-| `garmin_schema` | Show all 50 tables, columns, and row counts |
+| `garmin_schema` | Row counts for all 50 tables; pass `tables="sleep,stress"` for their columns |
 | `garmin_query` | Run any read-only SELECT query (read-only enforced at the SQLite engine level) |
 
 </details>

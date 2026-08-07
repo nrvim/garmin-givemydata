@@ -27,26 +27,48 @@ _conn.close()
 
 
 @mcp.tool()
-def garmin_schema() -> str:
-    """Show all tables, their columns, and row counts."""
+def garmin_schema(tables: str = "") -> str:
+    """Show table columns and row counts.
+
+    Called without *tables*, returns a compact index: row count per non-empty
+    table, plus the names of the empty ones — no column lists.  Pass a
+    comma-separated list of table names (e.g. "sleep,stress") to get the
+    columns of just those tables.
+    """
     conn = get_connection()
     try:
-        tables = query(
-            conn,
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
-        )
-        result = {}
-        for t in tables:
-            table_name = t["name"]
-            if not table_name.isidentifier():
-                continue
-            cols = query(conn, f"PRAGMA table_info([{table_name}])")
-            row_count = query(conn, f"SELECT COUNT(*) AS cnt FROM [{table_name}]")[0]["cnt"]
-            result[table_name] = {
-                "columns": [c["name"] for c in cols],
-                "row_count": row_count,
+        names = [
+            t["name"]
+            for t in query(conn, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            if t["name"].isidentifier()
+        ]
+        wanted = [t.strip() for t in tables.split(",") if t.strip()]
+
+        if not wanted:
+            counts = {
+                n: query(conn, f"SELECT COUNT(*) AS cnt FROM [{n}]")[0]["cnt"] for n in names
             }
-        return json.dumps(result, indent=2)
+            return json.dumps(
+                {
+                    "tables": {n: c for n, c in counts.items() if c},
+                    "empty_tables": [n for n, c in counts.items() if not c],
+                    "hint": 'call garmin_schema("sleep,stress") for the columns of specific tables',
+                },
+                separators=(",", ":"),
+            )
+
+        unknown = [t for t in wanted if t not in names]
+        if unknown:
+            return json.dumps({"error": "unknown tables", "unknown": unknown, "available": names})
+
+        result = {}
+        for name in wanted:
+            cols = query(conn, f"PRAGMA table_info([{name}])")
+            result[name] = {
+                "columns": [c["name"] for c in cols],
+                "row_count": query(conn, f"SELECT COUNT(*) AS cnt FROM [{name}]")[0]["cnt"],
+            }
+        return json.dumps(result, separators=(",", ":"))
     finally:
         conn.close()
 
