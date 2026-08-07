@@ -4,6 +4,7 @@ import json
 import sqlite3
 from unittest.mock import patch
 
+from garmin_mcp import server
 from garmin_mcp.server import garmin_schema
 
 
@@ -51,7 +52,7 @@ def test_index_stays_small(temp_db_file):
 def test_named_tables_return_their_columns(temp_db_file):
     _insert_sleep_row(temp_db_file)
 
-    result = _call(temp_db_file, "sleep,stress")
+    result = _call(temp_db_file, "sleep,stress")["tables"]
 
     assert set(result) == {"sleep", "stress"}
     assert result["sleep"]["row_count"] == 1
@@ -61,7 +62,47 @@ def test_named_tables_return_their_columns(temp_db_file):
 
 
 def test_table_names_are_trimmed(temp_db_file):
-    assert set(_call(temp_db_file, " sleep , stress ")) == {"sleep", "stress"}
+    assert set(_call(temp_db_file, " sleep , stress ")["tables"]) == {"sleep", "stress"}
+
+
+def test_epoch_ms_table_documents_its_raw_json(temp_db_file):
+    """Regression: stressValuesArray is timestamped in epoch milliseconds while
+    bodyBattery.data uses local ISO text, so reading one like the other groups
+    every sample into its own bucket instead of failing."""
+    result = _call(temp_db_file, "stress")
+
+    assert result["tables"]["stress"]["raw_json"]["$.stressValuesArray"] == "[epoch_ms, stress]"
+    assert "unixepoch" in result["timestamps"]
+    assert "-2 off-wrist" in result["tables"]["stress"]["caveat"]
+
+
+def test_iso_table_is_not_given_the_epoch_hint(temp_db_file):
+    result = _call(temp_db_file, "body_battery")
+
+    assert result["tables"]["body_battery"]["raw_json"]["$.bodyBattery.data"].startswith("[iso_local")
+    assert "timestamps" not in result
+
+
+def test_table_without_intraday_arrays_carries_no_notes(temp_db_file):
+    result = _call(temp_db_file, "sleep")
+
+    assert set(result["tables"]["sleep"]) == {"columns", "row_count"}
+    assert "timestamps" not in result
+
+
+def test_documented_tables_still_exist(temp_db_file):
+    """A note pinned to a renamed or dropped table would silently never show up."""
+    index = _call(temp_db_file)
+    known = set(index["tables"]) | set(index["empty_tables"])
+
+    assert set(server._RAW_JSON_SHAPES) <= known
+    assert set(server._RAW_JSON_SENTINELS) <= known
+
+
+def test_index_carries_no_raw_json_notes(temp_db_file):
+    """The notes are for whoever is about to write SQL against one table —
+    paying for all of them in the index would undo the slimming."""
+    assert "epoch_ms" not in json.dumps(_call(temp_db_file))
 
 
 def test_unknown_table_reports_available_ones(temp_db_file):

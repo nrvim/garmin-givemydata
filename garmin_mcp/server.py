@@ -25,6 +25,39 @@ _conn.close()
 # garmin_schema
 # ---------------------------------------------------------------------------
 
+# Shape of the intraday arrays buried in raw_json, per table.  Garmin is not
+# consistent here — some feeds timestamp their samples as epoch milliseconds
+# (GMT) and others as local ISO text — so querying one like the other silently
+# produces garbage instead of an error.  Surfaced when the table is asked for
+# by name, i.e. right before its raw_json gets queried.
+_RAW_JSON_SHAPES = {
+    "body_battery": {
+        "$.bodyBattery.data": "[iso_local, level, ?, status]",
+        "$.stress.data": "[iso_local, stress]",
+    },
+    "daily_movement": {"$.movementValues": "[epoch_ms, intensity]"},
+    "floors": {"$.floorValuesArray": "[iso_local_start, iso_local_end, ascended, descended]"},
+    "heart_rate": {"$.heartRateValues": "[epoch_ms, bpm]"},
+    "hrv_timeline": {"$.hrvReadings": "{hrvValue, readingTimeGMT, readingTimeLocal}"},
+    "respiration": {"$.respirationValuesArray": "[epoch_ms, breaths_per_min]"},
+    "spo2": {"$.spo2ValuesArray": "[epoch_ms, spo2, ?]"},
+    "stress": {
+        "$.stressValuesArray": "[epoch_ms, stress]",
+        "$.bodyBatteryValuesArray": "[epoch_ms, level, ?, status]",
+    },
+}
+
+_EPOCH_MS_HINT = (
+    "epoch_ms is GMT: use datetime(ts/1000,'unixepoch') and add your UTC offset "
+    "in seconds for local time. iso_local is already local text — never mix the two."
+)
+
+# Sentinels that look like readings but are not; averaging over them skews the result.
+_RAW_JSON_SENTINELS = {
+    "stress": "stress < 0 means no reading (-1 unmeasurable, -2 off-wrist); filter them out",
+    "respiration": "value < 0 means no reading (-1 unmeasurable, -2 off-wrist); filter them out",
+}
+
 
 @mcp.tool()
 def garmin_schema(tables: str = "") -> str:
@@ -61,13 +94,23 @@ def garmin_schema(tables: str = "") -> str:
         if unknown:
             return json.dumps({"error": "unknown tables", "unknown": unknown, "available": names})
 
-        result = {}
+        # Tables live under their own key so a note can never be mistaken for
+        # a table (nor a table named "timestamps" shadow a note).
+        result = {"tables": {}}
         for name in wanted:
             cols = query(conn, f"PRAGMA table_info([{name}])")
-            result[name] = {
+            result["tables"][name] = {
                 "columns": [c["name"] for c in cols],
                 "row_count": query(conn, f"SELECT COUNT(*) AS cnt FROM [{name}]")[0]["cnt"],
             }
+            if name in _RAW_JSON_SHAPES:
+                result["tables"][name]["raw_json"] = _RAW_JSON_SHAPES[name]
+            if name in _RAW_JSON_SENTINELS:
+                result["tables"][name]["caveat"] = _RAW_JSON_SENTINELS[name]
+
+        if any("epoch_ms" in s for n in wanted for s in _RAW_JSON_SHAPES.get(n, {}).values()):
+            result["timestamps"] = _EPOCH_MS_HINT
+
         return json.dumps(result, separators=(",", ":"))
     finally:
         conn.close()
