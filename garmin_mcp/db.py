@@ -2469,9 +2469,14 @@ def upsert_weight(conn: sqlite3.Connection, record: dict, cal_date: str = None) 
 
 
 def upsert_vo2max(conn: sqlite3.Connection, record: dict, sport: str = "RUNNING") -> None:
-    d = record.get("calendarDate") or record.get("date")
-    val = record.get("vo2MaxPreciseValue") or record.get("value") or record.get("generic")
-    if not d:
+    # Garmin nests the payload under "generic" (or "cycling" for that sport):
+    # {"cycling": null, "generic": {"calendarDate": ..., "vo2MaxPreciseValue": ...}, ...}
+    inner = record.get("cycling") if sport == "CYCLING" else record.get("generic")
+    if not isinstance(inner, dict):
+        inner = record
+    d = inner.get("calendarDate") or inner.get("date") or record.get("calendarDate") or record.get("date")
+    val = inner.get("vo2MaxPreciseValue") or inner.get("vo2MaxValue") or inner.get("value")
+    if not d or val is None:
         return
     conn.execute(
         "INSERT OR REPLACE INTO vo2max (calendar_date, sport, value, raw_json) VALUES (?, ?, ?, ?)",
