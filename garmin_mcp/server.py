@@ -147,9 +147,7 @@ def garmin_schema(tables: str = "") -> str:
         wanted = [t.strip() for t in tables.split(",") if t.strip()]
 
         if not wanted:
-            counts = {
-                n: query(conn, f"SELECT COUNT(*) AS cnt FROM [{n}]")[0]["cnt"] for n in names
-            }
+            counts = {n: query(conn, f"SELECT COUNT(*) AS cnt FROM [{n}]")[0]["cnt"] for n in names}
             return json.dumps(
                 {
                     "tables": {n: c for n, c in counts.items() if c},
@@ -179,9 +177,7 @@ def garmin_schema(tables: str = "") -> str:
                 result["tables"][name]["caveat"] = _RAW_JSON_SENTINELS[name]
 
         if any(
-            _TS_EPOCH_MS in shape
-            for table in result["tables"].values()
-            for shape in table.get("raw_json", {}).values()
+            _TS_EPOCH_MS in shape for table in result["tables"].values() for shape in table.get("raw_json", {}).values()
         ):
             result["timestamps"] = _EPOCH_MS_HINT
 
@@ -1083,7 +1079,9 @@ def garmin_sleep(start_date: str = "", days: int = 7) -> str:
                ORDER BY calendar_date""",
             [start_date, end_date],
         )
-        return json.dumps({"period": {"start": start_date, "end": end_date}, "nights": rows}, separators=(",", ":"), default=str)
+        return json.dumps(
+            {"period": {"start": start_date, "end": end_date}, "nights": rows}, separators=(",", ":"), default=str
+        )
     finally:
         conn.close()
 

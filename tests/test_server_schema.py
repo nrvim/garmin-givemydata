@@ -84,9 +84,7 @@ def test_epoch_ms_table_documents_its_raw_json(temp_db_file):
     """Regression: stressValuesArray is timestamped in epoch milliseconds while
     bodyBattery.data uses local ISO text, so reading one like the other groups
     every sample into its own bucket instead of failing."""
-    _insert_raw_json(
-        temp_db_file, "stress", {"stressValuesArray": _samples([1785874500000, 23])}
-    )
+    _insert_raw_json(temp_db_file, "stress", {"stressValuesArray": _samples([1785874500000, 23])})
 
     result = _call(temp_db_file, "stress")
 
@@ -113,9 +111,7 @@ def test_shape_follows_the_data_not_a_declared_list(temp_db_file):
     """The point of reading the shape back: were Garmin to switch a feed from
     epoch milliseconds to ISO text, a hardcoded note would keep claiming the
     old format and send every query down the wrong path."""
-    _insert_raw_json(
-        temp_db_file, "stress", {"stressValuesArray": _samples(["2026-04-19T10:00:00.0", 23])}
-    )
+    _insert_raw_json(temp_db_file, "stress", {"stressValuesArray": _samples(["2026-04-19T10:00:00.0", 23])})
 
     result = _call(temp_db_file, "stress")
 
