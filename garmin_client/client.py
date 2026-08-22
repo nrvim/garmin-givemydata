@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -793,6 +794,26 @@ class GarminClient:
     # ── Batch fetching ───────────────────────────────────────────
 
     def _fetch_batch(self, rest: dict, gql: dict) -> dict:
+        """Fetch a batch with retries — a transient browser stall must not
+        kill a multi-year sync (each batch used to be a single point of
+        failure via Selenium's script timeout)."""
+        attempts = 3
+        last_exc = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._fetch_batch_once(rest, gql)
+            except WebDriverException as e:
+                last_exc = e
+                log.warning("_fetch_batch attempt %d/%d failed: %s", attempt, attempts, e)
+                if attempt < attempts:
+                    time.sleep(10)
+        print(
+            f"  WARNING: batch of {len(rest) + len(gql)} endpoints failed "
+            f"after {attempts} attempts ({last_exc}) — skipping; re-run sync to fill this gap"
+        )
+        return {}
+
+    def _fetch_batch_once(self, rest: dict, gql: dict) -> dict:
         """Fetch a batch of REST + GraphQL endpoints in parallel via browser."""
         self._ensure_on_garmin()
         csrf = self._ensure_csrf()
@@ -812,7 +833,8 @@ class GarminClient:
 
                 async function get(url) {
                     try {
-                        var resp = await fetch(url, {credentials:'include', headers: h});
+                        var resp = await fetch(url, {credentials:'include', headers: h,
+                                                     signal: AbortSignal.timeout(60000)});
                         if (resp.status === 200) {
                             var text = await resp.text();
                             try { return {status: 200, data: JSON.parse(text)}; }
@@ -828,7 +850,8 @@ class GarminClient:
                             method: 'POST',
                             credentials: 'include',
                             headers: Object.assign({}, h, {'Content-Type': 'application/json'}),
-                            body: JSON.stringify({query: query})
+                            body: JSON.stringify({query: query}),
+                            signal: AbortSignal.timeout(60000)
                         });
                         if (resp.status === 200) return {status: 200, data: await resp.json()};
                         return {status: resp.status, data: null};
