@@ -331,6 +331,8 @@ CREATE TABLE IF NOT EXISTS activity (
     activity_min_hr                     INTEGER,
     direct_workout_feel                 INTEGER,
     direct_workout_rpe                  INTEGER,
+    begin_pack_weight                   REAL,
+    end_pack_weight                     REAL,
     raw_json                            TEXT
 );
 
@@ -1175,7 +1177,12 @@ def migrate_gear_table_v2(conn: sqlite3.Connection) -> None:
 
 
 def migrate_activity_table(conn: sqlite3.Connection) -> None:
-    """Add new columns to activity table and backfill from summaryDTO in raw_json.
+    """Add new columns to activity table and backfill from raw_json.
+
+    raw_json holds two shapes depending on which endpoint fetched the row:
+    the per-activity details endpoint nests fields under summaryDTO, while the
+    bulk list endpoint puts the same fields at the top level — and a row's
+    shape can flip between syncs (#79). The backfill checks both.
 
     Note: summaryDTO.totalWork is in kilocalories of mechanical work, not joules
     (verified against avg_power × duration: 224W × 4648s ≈ 1041 kJ ≈ 248 kcal,
@@ -1199,21 +1206,30 @@ def migrate_activity_table(conn: sqlite3.Connection) -> None:
             ("activity_min_hr", "INTEGER"),
             ("direct_workout_feel", "INTEGER"),
             ("direct_workout_rpe", "INTEGER"),
+            ("begin_pack_weight", "REAL"),
+            ("end_pack_weight", "REAL"),
         ],
     )
     update_map = {
-        "body_battery_change": "$.summaryDTO.differenceBodyBattery",
-        "total_work_kcal": "$.summaryDTO.totalWork",
-        "avg_grade_adjusted_speed": "$.summaryDTO.avgGradeAdjustedSpeed",
-        "activity_steps": "$.summaryDTO.steps",
-        "activity_min_hr": "$.summaryDTO.minHR",
-        "direct_workout_feel": "$.summaryDTO.directWorkoutFeel",
-        "direct_workout_rpe": "$.summaryDTO.directWorkoutRpe",
+        "body_battery_change": "differenceBodyBattery",
+        "total_work_kcal": "totalWork",
+        "avg_grade_adjusted_speed": "avgGradeAdjustedSpeed",
+        "activity_steps": "steps",
+        "activity_min_hr": "minHR",
+        "direct_workout_feel": "directWorkoutFeel",
+        "direct_workout_rpe": "directWorkoutRpe",
+        "begin_pack_weight": "beginPackWeight",
+        "end_pack_weight": "endPackWeight",
     }
-    for col, path in update_map.items():
+    for col, key in update_map.items():
         conn.execute(
-            f"UPDATE activity SET {col} = json_extract(raw_json, ?) WHERE raw_json IS NOT NULL AND {col} IS NULL",
-            (path,),
+            f"""UPDATE activity
+                SET {col} = COALESCE(
+                    json_extract(raw_json, ?),
+                    json_extract(raw_json, ?)
+                )
+                WHERE raw_json IS NOT NULL AND {col} IS NULL""",
+            (f"$.{key}", f"$.summaryDTO.{key}"),
         )
     conn.commit()
 
