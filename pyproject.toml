@@ -29,7 +29,7 @@ classifiers = [
 dependencies = [
     "seleniumbase>=4.30",
     "httpx>=0.25",
-    "mcp[cli]>=1.0,<2",
+    "mcp[cli]>=1.0,<3",
     "python-dotenv>=1.0",
     "fitparse>=1.2.0",
 ]
