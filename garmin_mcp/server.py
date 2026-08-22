@@ -7,7 +7,10 @@ import logging
 import threading
 from datetime import date, timedelta
 
-from mcp.server.fastmcp import FastMCP
+try:  # mcp SDK v1
+    from mcp.server.fastmcp import FastMCP
+except ImportError:  # mcp SDK v2 renamed FastMCP to MCPServer
+    from mcp.server import MCPServer as FastMCP
 
 from .db import get_connection, init_db, query, query_readonly
 
