@@ -1298,6 +1298,77 @@ class TestActivityMigration:
         assert row["total_work_kcal"] is None
         conn.close()
 
+    def test_backfill_from_flat_shape(self):
+        """Rows fetched via the bulk/list endpoint have fields at the top level,
+        not under summaryDTO — the backfill must handle both shapes (#79)."""
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript("""
+            CREATE TABLE activity (
+                activity_id INTEGER PRIMARY KEY,
+                raw_json TEXT
+            );
+        """)
+        flat = {
+            "differenceBodyBattery": -18,
+            "totalWork": 412.3,
+            "avgGradeAdjustedSpeed": 2.91,
+            "steps": 8400,
+            "minHR": 88,
+            "directWorkoutFeel": 3,
+            "directWorkoutRpe": 6,
+        }
+        conn.execute(
+            "INSERT INTO activity VALUES (?, ?)",
+            (2, json.dumps(flat)),
+        )
+        conn.commit()
+        migrate_activity_table(conn)
+        row = dict(conn.execute("SELECT * FROM activity WHERE activity_id = 2").fetchone())
+        assert row["body_battery_change"] == -18
+        assert row["total_work_kcal"] == pytest.approx(412.3)
+        assert row["avg_grade_adjusted_speed"] == pytest.approx(2.91, abs=0.01)
+        assert row["activity_steps"] == 8400
+        assert row["activity_min_hr"] == 88
+        assert row["direct_workout_feel"] == 3
+        assert row["direct_workout_rpe"] == 6
+        conn.close()
+
+    def test_adds_pack_weight_columns(self, temp_db):
+        migrate_activity_table(temp_db)
+        cols = _cols(temp_db, "activity")
+        assert "begin_pack_weight" in cols
+        assert "end_pack_weight" in cols
+
+    def test_pack_weight_backfill_both_shapes(self):
+        """beginPackWeight/endPackWeight must backfill from flat and nested rows (#79)."""
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript("""
+            CREATE TABLE activity (
+                activity_id INTEGER PRIMARY KEY,
+                raw_json TEXT
+            );
+        """)
+        rows = [
+            (1, json.dumps({"beginPackWeight": 9071.85, "endPackWeight": 9071.85})),
+            (2, json.dumps({"summaryDTO": {"beginPackWeight": 4535.92}})),
+            (3, json.dumps({"activityName": "no pack weight"})),
+        ]
+        conn.executemany("INSERT INTO activity VALUES (?, ?)", rows)
+        conn.commit()
+        migrate_activity_table(conn)
+        got = {
+            r["activity_id"]: (r["begin_pack_weight"], r["end_pack_weight"])
+            for r in conn.execute("SELECT * FROM activity").fetchall()
+        }
+        assert got[1][0] == pytest.approx(9071.85)
+        assert got[1][1] == pytest.approx(9071.85)
+        assert got[2][0] == pytest.approx(4535.92)
+        assert got[2][1] is None
+        assert got[3] == (None, None)
+        conn.close()
+
 
 class TestFitnessAgeMigration:
     def test_adds_achievable_fitness_age(self, temp_db):
