@@ -1176,31 +1176,40 @@ def migrate_gear_table_v2(conn: sqlite3.Connection) -> None:
     )
 
 
-def migrate_running_dynamics_stride(conn: sqlite3.Connection) -> None:
-    """Backfill stride length from activity raw_json (#83).
+def migrate_running_dynamics_backfill(conn: sqlite3.Connection) -> None:
+    """Backfill running dynamics from activity raw_json (#83).
 
-    avgStrideLength only appears in list-endpoint payloads, which
-    upsert_running_dynamics never received — so avg_stride_len has never
-    held a value despite the data sitting in raw_json.
+    All five fields appear in list-endpoint payloads under avg*-prefixed
+    keys, which upsert_running_dynamics never received — avg_stride_len
+    exists ONLY there, and the others fill gaps for activities that were
+    never detail-fetched.
     """
+    col_keys = {
+        "avg_gct": "avgGroundContactTime",
+        "avg_gct_balance": "avgGroundContactBalance",
+        "avg_vert_osc": "avgVerticalOscillation",
+        "avg_vert_ratio": "avgVerticalRatio",
+        "avg_stride_len": "avgStrideLength",
+    }
+    any_key_present = " OR ".join(f"json_extract(raw_json, '$.{key}') IS NOT NULL" for key in col_keys.values())
     conn.execute(
-        """INSERT OR IGNORE INTO running_dynamics (activity_id)
-           SELECT activity_id FROM activity
-           WHERE json_extract(raw_json, '$.avgStrideLength') IS NOT NULL"""
+        f"""INSERT OR IGNORE INTO running_dynamics (activity_id)
+            SELECT activity_id FROM activity WHERE {any_key_present}"""
     )
-    conn.execute(
-        """UPDATE running_dynamics
-           SET avg_stride_len = (
-               SELECT json_extract(a.raw_json, '$.avgStrideLength')
-               FROM activity a
-               WHERE a.activity_id = running_dynamics.activity_id
-           )
-           WHERE avg_stride_len IS NULL"""
-    )
+    for col, key in col_keys.items():
+        conn.execute(
+            f"""UPDATE running_dynamics
+                SET {col} = (
+                    SELECT json_extract(a.raw_json, '$.{key}')
+                    FROM activity a
+                    WHERE a.activity_id = running_dynamics.activity_id
+                )
+                WHERE {col} IS NULL"""
+        )
     conn.commit()
 
 
-def migrate_daily_summary_stress(conn: sqlite3.Connection) -> None:
+def migrate_daily_summary_backfill(conn: sqlite3.Connection) -> None:
     """Backfill stress duration columns from raw_json (#83).
 
     The upsert read a *Seconds key spelling Garmin never sends
@@ -1211,12 +1220,74 @@ def migrate_daily_summary_stress(conn: sqlite3.Connection) -> None:
         ("low_stress_seconds", "lowStressDuration"),
         ("medium_stress_seconds", "mediumStressDuration"),
         ("high_stress_seconds", "highStressDuration"),
+        ("floors_ascended_goal", "userFloorsAscendedGoal"),
+        ("avg_resting_heart_rate_7day", "lastSevenDaysAvgRestingHeartRate"),
     ):
         conn.execute(
             f"""UPDATE daily_summary
                 SET {col} = json_extract(raw_json, '$.{key}')
                 WHERE raw_json IS NOT NULL AND {col} IS NULL"""
         )
+    conn.commit()
+
+
+def migrate_floors_totals(conn: sqlite3.Connection) -> None:
+    """Backfill floors totals by summing the interval array in raw_json (#83).
+
+    The floors endpoint never sends flat totals, so ascended/descended were
+    NULL on every row ever written. Descriptor-driven indices, done in
+    Python because the index mapping can vary per row.
+    """
+    rows = conn.execute(
+        "SELECT calendar_date, raw_json FROM floors WHERE ascended IS NULL AND raw_json IS NOT NULL"
+    ).fetchall()
+    for cal_date, raw in rows:
+        try:
+            record = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        ascended, descended = _floors_totals(record)
+        if ascended is None:
+            continue
+        conn.execute(
+            "UPDATE floors SET ascended = ?, descended = COALESCE(descended, ?) WHERE calendar_date = ?",
+            (ascended, descended, cal_date),
+        )
+    conn.commit()
+
+
+def migrate_health_status(conn: sqlite3.Connection) -> None:
+    """Backfill overall_status from raw_json and drop error-envelope rows (#83).
+
+    The upsert read overallStatus but the payload key is status, so the
+    column was NULL on every row; GraphQL error envelopes were also stored
+    as if they were a day's health status.
+    """
+    conn.execute(
+        """UPDATE health_status
+           SET overall_status = COALESCE(
+               json_extract(raw_json, '$.status'),
+               json_extract(raw_json, '$.overallStatus')
+           )
+           WHERE overall_status IS NULL AND raw_json IS NOT NULL"""
+    )
+    conn.execute(
+        """DELETE FROM health_status
+           WHERE overall_status IS NULL
+             AND raw_json IS NOT NULL
+             AND json_extract(raw_json, '$.message') IS NOT NULL"""
+    )
+    conn.commit()
+
+
+def migrate_calories_consumed(conn: sqlite3.Connection) -> None:
+    """Backfill consumed from raw_json (#83) — the daily-summary write path
+    hardcoded it to NULL even when consumedKilocalories was in the record."""
+    conn.execute(
+        """UPDATE calories
+           SET consumed = json_extract(raw_json, '$.consumedKilocalories')
+           WHERE consumed IS NULL AND raw_json IS NOT NULL"""
+    )
     conn.commit()
 
 
@@ -1478,9 +1549,12 @@ def init_db(conn: sqlite3.Connection) -> None:
     migrate_fitness_age_table(conn)
     migrate_weight_table_v3(conn)
     migrate_activity_table(conn)
-    migrate_running_dynamics_stride(conn)
-    migrate_daily_summary_stress(conn)
+    migrate_running_dynamics_backfill(conn)
+    migrate_daily_summary_backfill(conn)
     migrate_stress_max_level(conn)
+    migrate_floors_totals(conn)
+    migrate_health_status(conn)
+    migrate_calories_consumed(conn)
 
     # Only run cleanup/backfill when there are rows that actually need it.
     needs_cleanup = conn.execute(
@@ -1683,15 +1757,19 @@ def upsert_running_dynamics(conn: sqlite3.Connection, aid: int, record: dict) ->
     # Dynamics fields live in summaryDTO on activity details records, but
     # stride length only exists on list records, as avgStrideLength (#83).
     summary = record.get("summaryDTO") or record
-    stride = _any_key(summary, "strideLength", "avgStrideLength")
-    if stride is None:
-        stride = record.get("avgStrideLength")
+
+    def _dyn(nested_key: str, flat_key: str):
+        # Details records nest the bare key under summaryDTO; list records
+        # carry an avg*-prefixed key at the top level (#83 round 2).
+        val = _any_key(summary, nested_key, flat_key)
+        return record.get(flat_key) if val is None else val
+
     values = {
-        "avg_gct": summary.get("groundContactTime"),
-        "avg_gct_balance": summary.get("groundContactBalance"),
-        "avg_vert_osc": summary.get("verticalOscillation"),
-        "avg_vert_ratio": summary.get("verticalRatio"),
-        "avg_stride_len": stride,
+        "avg_gct": _dyn("groundContactTime", "avgGroundContactTime"),
+        "avg_gct_balance": _dyn("groundContactBalance", "avgGroundContactBalance"),
+        "avg_vert_osc": _dyn("verticalOscillation", "avgVerticalOscillation"),
+        "avg_vert_ratio": _dyn("verticalRatio", "avgVerticalRatio"),
+        "avg_stride_len": _dyn("strideLength", "avgStrideLength"),
     }
     # Don't create rows for activities that carry no dynamics at all —
     # empty rows only hide missing-data bugs (#83).
@@ -1772,11 +1850,15 @@ def upsert_daily_summary(conn: sqlite3.Connection, record: dict) -> None:
             "intensity_minutes_goal": record.get("intensityMinutesGoal"),
             "floors_ascended": record.get("floorsAscended"),
             "floors_descended": record.get("floorsDescended"),
-            "floors_ascended_goal": record.get("floorsAscendedGoal"),
+            # Garmin sends userFloorsAscendedGoal / lastSevenDaysAvgRestingHeartRate;
+            # the unprefixed spellings matched nothing (#83 round 2).
+            "floors_ascended_goal": _any_key(record, "userFloorsAscendedGoal", "floorsAscendedGoal"),
             "min_heart_rate": record.get("minHeartRate"),
             "max_heart_rate": record.get("maxHeartRate"),
             "resting_heart_rate": record.get("restingHeartRate"),
-            "avg_resting_heart_rate_7day": record.get("averageRestingHeartRate"),
+            "avg_resting_heart_rate_7day": _any_key(
+                record, "lastSevenDaysAvgRestingHeartRate", "averageRestingHeartRate"
+            ),
             "average_stress_level": record.get("averageStressLevel"),
             "max_stress_level": record.get("maxStressLevel"),
             # Garmin sends *Duration; the *Seconds spelling is kept as a
@@ -1856,7 +1938,7 @@ def upsert_calories_from_daily_summary(conn: sqlite3.Connection, record: dict) -
     conn.execute(
         """
         INSERT INTO calories (calendar_date, total, active, bmr, consumed, remaining, raw_json)
-        VALUES (?, ?, ?, ?, NULL, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(calendar_date) DO UPDATE SET
             total = excluded.total,
             active = excluded.active,
@@ -1873,6 +1955,10 @@ def upsert_calories_from_daily_summary(conn: sqlite3.Connection, record: dict) -
             total,
             active,
             bmr,
+            # The daily summary carries consumedKilocalories on food-logged
+            # days; it was hardcoded NULL here (#83 round 2). The conflict
+            # clause still lets a nutrition-service value win.
+            record.get("consumedKilocalories"),
             remaining,
             json.dumps(record),
         ),
@@ -2293,7 +2379,9 @@ def upsert_hrv(conn: sqlite3.Connection, record: dict) -> None:
             "calendar_date": record.get("calendarDate") or record.get("startTimestampLocal", "")[:10],
             "weekly_avg": record.get("weeklyAvg"),
             "last_night": record.get("lastNight"),
-            "last_night_avg": record.get("lastNightAvg") or record.get("lastNight5MinHigh"),
+            # Never fall back to the 5-min high — a peak stored as an average
+            # is the same unit-mismatch class as the max_stress bug (#83).
+            "last_night_avg": record.get("lastNightAvg"),
             "last_night_5min_high": record.get("lastNight5MinHigh"),
             "status": record.get("status"),
             "feedback_phrase": record.get("feedbackPhrase"),
@@ -2464,17 +2552,45 @@ def upsert_steps(conn: sqlite3.Connection, record: dict, cal_date: str = None) -
     )
 
 
+def _floors_totals(record: dict):
+    """Sum daily totals from the floors endpoint's interval array (#83).
+
+    The endpoint returns only floorValuesArray intervals — the flat
+    floorsAscended/floorsDescended totals never exist in that payload.
+    Column indices come from floorsValueDescriptorDTOList when present.
+    """
+    arr = record.get("floorValuesArray") or []
+    if not arr:
+        return None, None
+    idx_asc, idx_desc = 2, 3
+    for desc in record.get("floorsValueDescriptorDTOList") or []:
+        if desc.get("key") == "floorsAscended":
+            idx_asc = desc.get("index", idx_asc)
+        elif desc.get("key") == "floorsDescended":
+            idx_desc = desc.get("index", idx_desc)
+    try:
+        ascended = sum(entry[idx_asc] or 0 for entry in arr)
+        descended = sum(entry[idx_desc] or 0 for entry in arr)
+    except (IndexError, TypeError):
+        return None, None
+    return ascended, descended
+
+
 def upsert_floors(conn: sqlite3.Connection, record: dict, cal_date: str = None) -> None:
     d = cal_date or record.get("calendarDate") or record.get("date")
     if not d:
         return
+    ascended = record.get("floorsAscended")
+    descended = record.get("floorsDescended")
+    if ascended is None and descended is None:
+        ascended, descended = _floors_totals(record)
     conn.execute(
         "INSERT OR REPLACE INTO floors (calendar_date, ascended, descended, goal, raw_json) VALUES (?, ?, ?, ?, ?)",
         (
             d,
-            record.get("floorsAscended"),
-            record.get("floorsDescended"),
-            record.get("floorsAscendedGoal") or record.get("floorGoal"),
+            ascended,
+            descended,
+            _any_key(record, "floorsAscendedGoal", "floorGoal", "userFloorsAscendedGoal"),
             json.dumps(record),
         ),
     )
@@ -2489,9 +2605,9 @@ def upsert_intensity_minutes(conn: sqlite3.Connection, record: dict, cal_date: s
         "VALUES (?, ?, ?, ?, ?)",
         (
             d,
-            record.get("moderateIntensityMinutes") or record.get("weeklyModerate"),
-            record.get("vigorousIntensityMinutes") or record.get("weeklyVigorous"),
-            record.get("intensityMinutesGoal") or record.get("weeklyGoal"),
+            _any_key(record, "moderateIntensityMinutes", "weeklyModerate"),
+            _any_key(record, "vigorousIntensityMinutes", "weeklyVigorous"),
+            _any_key(record, "intensityMinutesGoal", "weeklyGoal"),
             json.dumps(record),
         ),
     )
@@ -3173,11 +3289,18 @@ def upsert_training_status(conn, record, cal_date=None):
 
 def upsert_health_status(conn, record, cal_date=None):
     d = cal_date or record.get("calendarDate") or record.get("date")
-    if d:
-        conn.execute(
-            "INSERT OR REPLACE INTO health_status (calendar_date, overall_status, raw_json) VALUES (?, ?, ?)",
-            (d, record.get("overallStatus"), json.dumps(record)),
-        )
+    if not d:
+        return
+    # The payload key is `status`; overallStatus never appears (#83 round 2).
+    status = _any_key(record, "overallStatus", "status")
+    if status is None and record.get("message") is not None:
+        # GraphQL error envelope — storing it as a day's health status only
+        # pollutes the table (0/4218 rows held a status on a real DB).
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO health_status (calendar_date, overall_status, raw_json) VALUES (?, ?, ?)",
+        (d, status, json.dumps(record)),
+    )
 
 
 def upsert_daily_events(conn, record, cal_date=None):
@@ -3969,7 +4092,9 @@ def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str
                             activity_steps           = COALESCE(?, activity_steps),
                             activity_min_hr          = COALESCE(?, activity_min_hr),
                             direct_workout_feel      = COALESCE(?, direct_workout_feel),
-                            direct_workout_rpe       = COALESCE(?, direct_workout_rpe)
+                            direct_workout_rpe       = COALESCE(?, direct_workout_rpe),
+                            begin_pack_weight        = COALESCE(?, begin_pack_weight),
+                            end_pack_weight          = COALESCE(?, end_pack_weight)
                         WHERE activity_id = ?
                         """,
                         (
@@ -3981,6 +4106,8 @@ def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str
                             _shape_get(rec, summary_dto, "minHR"),
                             _shape_get(rec, summary_dto, "directWorkoutFeel"),
                             _shape_get(rec, summary_dto, "directWorkoutRpe"),
+                            _shape_get(rec, summary_dto, "beginPackWeight"),
+                            _shape_get(rec, summary_dto, "endPackWeight"),
                             aid,
                         ),
                     )

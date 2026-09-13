@@ -7,12 +7,19 @@ import json
 
 from garmin_mcp.db import (
     migrate_activity_table,
-    migrate_daily_summary_stress,
-    migrate_running_dynamics_stride,
+    migrate_calories_consumed,
+    migrate_daily_summary_backfill,
+    migrate_floors_totals,
+    migrate_health_status,
+    migrate_running_dynamics_backfill,
     migrate_stress_max_level,
     save_to_db,
     upsert_activity,
     upsert_daily_summary,
+    upsert_floors,
+    upsert_health_status,
+    upsert_hrv,
+    upsert_intensity_minutes,
     upsert_running_dynamics,
     upsert_stress,
 )
@@ -99,6 +106,19 @@ class TestActivityDetailsFlatShape:
         assert row["activity_steps"] == 4321
         assert row["activity_min_hr"] == 48
 
+    def test_pack_weight_from_nested_detail_record(self, temp_db):
+        """Nested details records carry summaryDTO.beginPackWeight (#79 data);
+        the details branch must capture it live, not only via migration."""
+        upsert_activity(temp_db, {"activityId": 2002})
+        save_to_db(
+            temp_db,
+            "activity_details",
+            [{"activityId": 2002, "summaryDTO": {"beginPackWeight": 9071.85, "endPackWeight": 9000.0}}],
+        )
+        row = _activity_row(temp_db, 2002)
+        assert row["begin_pack_weight"] == 9071.85
+        assert row["end_pack_weight"] == 9000.0
+
     def test_nested_detail_record_still_populates(self, temp_db):
         upsert_activity(temp_db, {"activityId": 2001})
         save_to_db(
@@ -153,7 +173,7 @@ class TestRunningDynamicsStride:
             (3004, json.dumps({"activityId": 3004, "avgStrideLength": 98.7})),
         )
         temp_db.commit()
-        migrate_running_dynamics_stride(temp_db)
+        migrate_running_dynamics_backfill(temp_db)
         rd = _rd_row(temp_db, 3004)
         assert rd is not None
         assert rd["avg_stride_len"] == 98.7
@@ -164,8 +184,8 @@ class TestRunningDynamicsStride:
             (3005, json.dumps({"activityId": 3005, "avgStrideLength": 90.0})),
         )
         temp_db.commit()
-        migrate_running_dynamics_stride(temp_db)
-        migrate_running_dynamics_stride(temp_db)
+        migrate_running_dynamics_backfill(temp_db)
+        migrate_running_dynamics_backfill(temp_db)
         assert _rd_row(temp_db, 3005)["avg_stride_len"] == 90.0
 
 
@@ -218,7 +238,7 @@ class TestDailySummaryStressDurations:
             ("2026-09-03", json.dumps(raw)),
         )
         temp_db.commit()
-        migrate_daily_summary_stress(temp_db)
+        migrate_daily_summary_backfill(temp_db)
         row = self._row(temp_db, "2026-09-03")
         assert row["low_stress_seconds"] == 2490
         assert row["medium_stress_seconds"] == 0
@@ -288,3 +308,242 @@ class TestEnvelopeRowCleanup:
         temp_db.commit()
         migrate_activity_table(temp_db)
         assert _activity_row(temp_db, 5001) is not None
+
+
+class TestDailySummaryKeyNames:
+    """Round 3 (#83 audit method on the live DB): two more daily_summary
+    columns read keys Garmin never sends."""
+
+    def _row(self, conn, day):
+        return dict(conn.execute("SELECT * FROM daily_summary WHERE calendar_date = ?", (day,)).fetchone())
+
+    def test_real_key_spellings_captured(self, temp_db):
+        upsert_daily_summary(
+            temp_db,
+            {
+                "calendarDate": "2026-09-10",
+                "userFloorsAscendedGoal": 10,
+                "lastSevenDaysAvgRestingHeartRate": 52,
+            },
+        )
+        row = self._row(temp_db, "2026-09-10")
+        assert row["floors_ascended_goal"] == 10
+        assert row["avg_resting_heart_rate_7day"] == 52
+
+    def test_old_spellings_still_accepted(self, temp_db):
+        upsert_daily_summary(
+            temp_db,
+            {"calendarDate": "2026-09-11", "floorsAscendedGoal": 12, "averageRestingHeartRate": 55},
+        )
+        row = self._row(temp_db, "2026-09-11")
+        assert row["floors_ascended_goal"] == 12
+        assert row["avg_resting_heart_rate_7day"] == 55
+
+    def test_migration_backfills_new_columns(self, temp_db):
+        raw = {"calendarDate": "2026-09-12", "userFloorsAscendedGoal": 8, "lastSevenDaysAvgRestingHeartRate": 50}
+        temp_db.execute(
+            "INSERT INTO daily_summary (calendar_date, raw_json) VALUES (?, ?)",
+            ("2026-09-12", json.dumps(raw)),
+        )
+        temp_db.commit()
+        migrate_daily_summary_backfill(temp_db)
+        row = self._row(temp_db, "2026-09-12")
+        assert row["floors_ascended_goal"] == 8
+        assert row["avg_resting_heart_rate_7day"] == 50
+
+
+class TestFloorsTotals:
+    """The floors endpoint returns only interval arrays — the totals the code
+    read (floorsAscended etc.) never exist in that payload, so ascended and
+    descended were NULL on every row."""
+
+    _RECORD = {
+        "startTimestampGMT": "2026-09-10T04:00:00.0",
+        "floorsValueDescriptorDTOList": [
+            {"index": 0, "key": "startTimeGMT"},
+            {"index": 1, "key": "endTimeGMT"},
+            {"index": 2, "key": "floorsAscended"},
+            {"index": 3, "key": "floorsDescended"},
+        ],
+        "floorValuesArray": [
+            ["2026-09-10T04:00:00.0", "2026-09-10T04:15:00.0", 3, 1],
+            ["2026-09-10T04:15:00.0", "2026-09-10T04:30:00.0", 2, 0],
+        ],
+    }
+
+    def _row(self, conn, day):
+        return dict(conn.execute("SELECT * FROM floors WHERE calendar_date = ?", (day,)).fetchone())
+
+    def test_totals_summed_from_value_array(self, temp_db):
+        upsert_floors(temp_db, dict(self._RECORD), cal_date="2026-09-10")
+        row = self._row(temp_db, "2026-09-10")
+        assert row["ascended"] == 5
+        assert row["descended"] == 1
+
+    def test_explicit_totals_still_win(self, temp_db):
+        rec = dict(self._RECORD, floorsAscended=7, floorsDescended=2)
+        upsert_floors(temp_db, rec, cal_date="2026-09-11")
+        row = self._row(temp_db, "2026-09-11")
+        assert row["ascended"] == 7
+        assert row["descended"] == 2
+
+    def test_migration_backfills_from_raw_json(self, temp_db):
+        temp_db.execute(
+            "INSERT INTO floors (calendar_date, raw_json) VALUES (?, ?)",
+            ("2026-09-12", json.dumps(self._RECORD)),
+        )
+        temp_db.commit()
+        migrate_floors_totals(temp_db)
+        row = self._row(temp_db, "2026-09-12")
+        assert row["ascended"] == 5
+        assert row["descended"] == 1
+
+
+class TestHealthStatusKey:
+    """health_status records carry a status key; the code read overallStatus,
+    which never exists — 0 of 4,218 rows filled on a real DB. Old GraphQL
+    error envelopes were also stored as rows."""
+
+    def _row(self, conn, day):
+        r = conn.execute("SELECT * FROM health_status WHERE calendar_date = ?", (day,)).fetchone()
+        return dict(r) if r else None
+
+    def test_status_key_captured(self, temp_db):
+        upsert_health_status(
+            temp_db, {"status": "IN_RANGE", "type": "SKIN_TEMP_F", "value": 0.5}, cal_date="2026-09-10"
+        )
+        assert self._row(temp_db, "2026-09-10")["overall_status"] == "IN_RANGE"
+
+    def test_error_envelope_not_stored(self, temp_db):
+        upsert_health_status(
+            temp_db,
+            {"message": "INTERNAL_ERROR", "extensions": {"classification": "INTERNAL_ERROR"}, "locations": []},
+            cal_date="2026-09-11",
+        )
+        assert self._row(temp_db, "2026-09-11") is None
+
+    def test_migration_backfills_and_cleans(self, temp_db):
+        temp_db.execute(
+            "INSERT INTO health_status (calendar_date, raw_json) VALUES (?, ?)",
+            ("2026-09-12", json.dumps({"status": "OUT_OF_RANGE", "type": "HRV_STATUS"})),
+        )
+        temp_db.execute(
+            "INSERT INTO health_status (calendar_date, raw_json) VALUES (?, ?)",
+            ("2016-01-01", json.dumps({"message": "err", "extensions": {}, "locations": []})),
+        )
+        temp_db.commit()
+        migrate_health_status(temp_db)
+        assert self._row(temp_db, "2026-09-12")["overall_status"] == "OUT_OF_RANGE"
+        assert self._row(temp_db, "2016-01-01") is None
+
+
+class TestCaloriesConsumed:
+    """The daily-summary path hardcoded consumed to NULL even when
+    consumedKilocalories was present in the very record being stored."""
+
+    def _row(self, conn, day):
+        return dict(conn.execute("SELECT * FROM calories WHERE calendar_date = ?", (day,)).fetchone())
+
+    def test_consumed_captured_from_daily_summary(self, temp_db):
+        upsert_daily_summary(
+            temp_db,
+            {"calendarDate": "2026-09-10", "totalKilocalories": 2500, "consumedKilocalories": 1800},
+        )
+        assert self._row(temp_db, "2026-09-10")["consumed"] == 1800
+
+    def test_nutrition_value_not_overwritten(self, temp_db):
+        temp_db.execute(
+            "INSERT INTO calories (calendar_date, consumed) VALUES (?, ?)",
+            ("2026-09-11", 1500),
+        )
+        temp_db.commit()
+        upsert_daily_summary(
+            temp_db,
+            {"calendarDate": "2026-09-11", "totalKilocalories": 2500, "consumedKilocalories": 1800},
+        )
+        assert self._row(temp_db, "2026-09-11")["consumed"] == 1500
+
+    def test_migration_backfills_from_raw_json(self, temp_db):
+        temp_db.execute(
+            "INSERT INTO calories (calendar_date, total, raw_json) VALUES (?, ?, ?)",
+            ("2026-09-12", 2400, json.dumps({"calendarDate": "2026-09-12", "consumedKilocalories": 2100})),
+        )
+        temp_db.commit()
+        migrate_calories_consumed(temp_db)
+        assert self._row(temp_db, "2026-09-12")["consumed"] == 2100
+
+
+class TestRunningDynamicsListAliases:
+    """List records carry ALL dynamics fields under avg* names
+    (avgGroundContactTime, avgGroundContactBalance, ...), not just stride —
+    a stride-only harvest leaves the other four NULL for users whose
+    activities are never detail-fetched."""
+
+    def test_all_dynamics_from_flat_list_record(self, temp_db):
+        upsert_activity(
+            temp_db,
+            {
+                "activityId": 4000,
+                "avgGroundContactTime": 250.0,
+                "avgGroundContactBalance": 49.8,
+                "avgVerticalOscillation": 8.1,
+                "avgVerticalRatio": 7.9,
+                "avgStrideLength": 100.0,
+            },
+        )
+        rd = _rd_row(temp_db, 4000)
+        assert rd["avg_gct"] == 250.0
+        assert rd["avg_gct_balance"] == 49.8
+        assert rd["avg_vert_osc"] == 8.1
+        assert rd["avg_vert_ratio"] == 7.9
+        assert rd["avg_stride_len"] == 100.0
+
+    def test_migration_backfills_all_five(self, temp_db):
+        raw = {
+            "activityId": 4001,
+            "avgGroundContactTime": 240.0,
+            "avgGroundContactBalance": 50.1,
+            "avgVerticalOscillation": 8.5,
+            "avgVerticalRatio": 8.0,
+            "avgStrideLength": 95.0,
+        }
+        temp_db.execute(
+            "INSERT INTO activity (activity_id, raw_json) VALUES (?, ?)",
+            (4001, json.dumps(raw)),
+        )
+        temp_db.commit()
+        migrate_running_dynamics_backfill(temp_db)
+        rd = _rd_row(temp_db, 4001)
+        assert rd["avg_gct"] == 240.0
+        assert rd["avg_gct_balance"] == 50.1
+        assert rd["avg_vert_osc"] == 8.5
+        assert rd["avg_vert_ratio"] == 8.0
+        assert rd["avg_stride_len"] == 95.0
+
+
+class TestHrvAvgNotPollutedByHigh:
+    """last_night_avg fell back to lastNight5MinHigh — a peak stored as an
+    average, same unit-mismatch class as the max_stress bug."""
+
+    def test_5min_high_not_stored_as_avg(self, temp_db):
+        upsert_hrv(temp_db, {"calendarDate": "2026-09-10", "lastNight5MinHigh": 88})
+        row = dict(temp_db.execute("SELECT * FROM hrv WHERE calendar_date = ?", ("2026-09-10",)).fetchone())
+        assert row["last_night_avg"] is None
+        assert row["last_night_5min_high"] == 88
+
+
+class TestIntensityMinutesZeros:
+    """0 moderate/vigorous minutes is a real value — the or-chains dropped it."""
+
+    def test_zero_values_survive(self, temp_db):
+        upsert_intensity_minutes(
+            temp_db,
+            {"moderateIntensityMinutes": 0, "vigorousIntensityMinutes": 0, "intensityMinutesGoal": 150},
+            cal_date="2026-09-10",
+        )
+        row = dict(
+            temp_db.execute("SELECT * FROM intensity_minutes WHERE calendar_date = ?", ("2026-09-10",)).fetchone()
+        )
+        assert row["moderate"] == 0
+        assert row["vigorous"] == 0
+        assert row["goal"] == 150
