@@ -1176,6 +1176,66 @@ def migrate_gear_table_v2(conn: sqlite3.Connection) -> None:
     )
 
 
+def migrate_running_dynamics_stride(conn: sqlite3.Connection) -> None:
+    """Backfill stride length from activity raw_json (#83).
+
+    avgStrideLength only appears in list-endpoint payloads, which
+    upsert_running_dynamics never received — so avg_stride_len has never
+    held a value despite the data sitting in raw_json.
+    """
+    conn.execute(
+        """INSERT OR IGNORE INTO running_dynamics (activity_id)
+           SELECT activity_id FROM activity
+           WHERE json_extract(raw_json, '$.avgStrideLength') IS NOT NULL"""
+    )
+    conn.execute(
+        """UPDATE running_dynamics
+           SET avg_stride_len = (
+               SELECT json_extract(a.raw_json, '$.avgStrideLength')
+               FROM activity a
+               WHERE a.activity_id = running_dynamics.activity_id
+           )
+           WHERE avg_stride_len IS NULL"""
+    )
+    conn.commit()
+
+
+def migrate_daily_summary_stress(conn: sqlite3.Connection) -> None:
+    """Backfill stress duration columns from raw_json (#83).
+
+    The upsert read a *Seconds key spelling Garmin never sends
+    (actual keys: lowStressDuration etc.), so these columns were NULL on
+    every row ever written.
+    """
+    for col, key in (
+        ("low_stress_seconds", "lowStressDuration"),
+        ("medium_stress_seconds", "mediumStressDuration"),
+        ("high_stress_seconds", "highStressDuration"),
+    ):
+        conn.execute(
+            f"""UPDATE daily_summary
+                SET {col} = json_extract(raw_json, '$.{key}')
+                WHERE raw_json IS NOT NULL AND {col} IS NULL"""
+        )
+    conn.commit()
+
+
+def migrate_stress_max_level(conn: sqlite3.Connection) -> None:
+    """Repair max_stress values that are actually durations (#83).
+
+    max_stress is a 0-100 level, but older versions fell back to
+    highStressDuration (seconds) when maxStressLevel was falsy. Levels never
+    exceed 100, so anything above that is duration garbage — re-derive it
+    from raw_json.
+    """
+    conn.execute(
+        """UPDATE stress
+           SET max_stress = json_extract(raw_json, '$.maxStressLevel')
+           WHERE raw_json IS NOT NULL AND max_stress > 100"""
+    )
+    conn.commit()
+
+
 def migrate_activity_table(conn: sqlite3.Connection) -> None:
     """Add new columns to activity table and backfill from raw_json.
 
@@ -1210,6 +1270,22 @@ def migrate_activity_table(conn: sqlite3.Connection) -> None:
             ("end_pack_weight", "REAL"),
         ],
     )
+    # Old versions stored API response envelopes as activity rows (#83).
+    # Match the envelope shapes positively (activityList wrapper, GraphQL
+    # error envelope) rather than deleting anything that merely looks empty —
+    # this is a destructive step and must never touch a real record.
+    conn.execute(
+        """DELETE FROM activity
+           WHERE raw_json IS NOT NULL
+             AND json_extract(raw_json, '$.activityId') IS NULL
+             AND (json_extract(raw_json, '$.activityList') IS NOT NULL
+                  OR json_extract(raw_json, '$.errors') IS NOT NULL)"""
+    )
+
+    # Note: total_work_kcal, avg_grade_adjusted_speed, direct_workout_feel and
+    # direct_workout_rpe are device/activity-dependent (power meters, cycling,
+    # manual RPE entry) — Garmin omits them entirely for many activity mixes,
+    # so they can legitimately stay NULL after this backfill (#83).
     update_map = {
         "body_battery_change": "differenceBodyBattery",
         "total_work_kcal": "totalWork",
@@ -1402,6 +1478,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     migrate_fitness_age_table(conn)
     migrate_weight_table_v3(conn)
     migrate_activity_table(conn)
+    migrate_running_dynamics_stride(conn)
+    migrate_daily_summary_stress(conn)
+    migrate_stress_max_level(conn)
 
     # Only run cleanup/backfill when there are rows that actually need it.
     needs_cleanup = conn.execute(
@@ -1582,22 +1661,55 @@ def upsert_lactate_threshold(conn: sqlite3.Connection, record: dict) -> None:
     )
 
 
+def _any_key(record: dict, *keys):
+    """First value present under any of the given keys, testing `is None`
+    so legitimate zeros survive."""
+    for k in keys:
+        v = record.get(k)
+        if v is not None:
+            return v
+    return None
+
+
+def _shape_get(record: dict, summary: dict, key: str):
+    """Fields Garmin returns at the top level on list records and under
+    summaryDTO on details records — and a row's shape can flip between
+    syncs (#79, #83). Flat first, nested as fallback; `is None` so 0 survives."""
+    val = record.get(key)
+    return summary.get(key) if val is None else val
+
+
 def upsert_running_dynamics(conn: sqlite3.Connection, aid: int, record: dict) -> None:
-    # Running dynamics are usually in summaryDTO for activity details
+    # Dynamics fields live in summaryDTO on activity details records, but
+    # stride length only exists on list records, as avgStrideLength (#83).
     summary = record.get("summaryDTO") or record
+    stride = _any_key(summary, "strideLength", "avgStrideLength")
+    if stride is None:
+        stride = record.get("avgStrideLength")
+    values = {
+        "avg_gct": summary.get("groundContactTime"),
+        "avg_gct_balance": summary.get("groundContactBalance"),
+        "avg_vert_osc": summary.get("verticalOscillation"),
+        "avg_vert_ratio": summary.get("verticalRatio"),
+        "avg_stride_len": stride,
+    }
+    # Don't create rows for activities that carry no dynamics at all —
+    # empty rows only hide missing-data bugs (#83).
+    if all(v is None for v in values.values()):
+        return
+    # INSERT OR IGNORE + COALESCE UPDATE: a details record (which never
+    # carries stride) must not wipe a stride stored from the list record.
+    conn.execute("INSERT OR IGNORE INTO running_dynamics (activity_id) VALUES (?)", (aid,))
     conn.execute(
-        """INSERT OR REPLACE INTO running_dynamics
-           (activity_id, avg_gct, avg_gct_balance, avg_vert_osc, avg_vert_ratio, avg_stride_len, raw_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (
-            aid,
-            summary.get("groundContactTime"),
-            summary.get("groundContactBalance"),
-            summary.get("verticalOscillation"),
-            summary.get("verticalRatio"),
-            summary.get("strideLength"),
-            json.dumps(record),
-        ),
+        """UPDATE running_dynamics SET
+               avg_gct         = COALESCE(:avg_gct, avg_gct),
+               avg_gct_balance = COALESCE(:avg_gct_balance, avg_gct_balance),
+               avg_vert_osc    = COALESCE(:avg_vert_osc, avg_vert_osc),
+               avg_vert_ratio  = COALESCE(:avg_vert_ratio, avg_vert_ratio),
+               avg_stride_len  = COALESCE(:avg_stride_len, avg_stride_len),
+               raw_json        = :raw_json
+           WHERE activity_id = :activity_id""",
+        {**values, "raw_json": json.dumps(record), "activity_id": aid},
     )
 
 
@@ -1667,9 +1779,11 @@ def upsert_daily_summary(conn: sqlite3.Connection, record: dict) -> None:
             "avg_resting_heart_rate_7day": record.get("averageRestingHeartRate"),
             "average_stress_level": record.get("averageStressLevel"),
             "max_stress_level": record.get("maxStressLevel"),
-            "low_stress_seconds": record.get("lowStressSeconds"),
-            "medium_stress_seconds": record.get("mediumStressSeconds"),
-            "high_stress_seconds": record.get("highStressSeconds"),
+            # Garmin sends *Duration; the *Seconds spelling is kept as a
+            # fallback in case any payload variant uses it (#83).
+            "low_stress_seconds": _any_key(record, "lowStressDuration", "lowStressSeconds"),
+            "medium_stress_seconds": _any_key(record, "mediumStressDuration", "mediumStressSeconds"),
+            "high_stress_seconds": _any_key(record, "highStressDuration", "highStressSeconds"),
             "stress_qualifier": record.get("stressQualifier"),
             "body_battery_charged": record.get("bodyBatteryChargedValue"),
             "body_battery_drained": record.get("bodyBatteryDrainedValue"),
@@ -2044,6 +2158,8 @@ def upsert_activity(conn: sqlite3.Connection, record: dict) -> None:
             activity_min_hr          = COALESCE(:activity_min_hr, activity_min_hr),
             direct_workout_feel      = COALESCE(:direct_workout_feel, direct_workout_feel),
             direct_workout_rpe       = COALESCE(:direct_workout_rpe, direct_workout_rpe),
+            begin_pack_weight        = COALESCE(:begin_pack_weight, begin_pack_weight),
+            end_pack_weight          = COALESCE(:end_pack_weight, end_pack_weight),
             raw_json = :raw_json
         WHERE activity_id = :activity_id
         """,
@@ -2094,16 +2210,21 @@ def upsert_activity(conn: sqlite3.Connection, record: dict) -> None:
             "max_temperature": record.get("maxTemperature"),
             "manufacturer": record.get("manufacturer"),
             "device_id": record.get("deviceId"),
-            "body_battery_change": summary.get("differenceBodyBattery"),
-            "total_work_kcal": summary.get("totalWork"),
-            "avg_grade_adjusted_speed": summary.get("avgGradeAdjustedSpeed"),
-            "activity_steps": summary.get("steps"),
-            "activity_min_hr": summary.get("minHR"),
-            "direct_workout_feel": summary.get("directWorkoutFeel"),
-            "direct_workout_rpe": summary.get("directWorkoutRpe"),
+            "body_battery_change": _shape_get(record, summary, "differenceBodyBattery"),
+            "total_work_kcal": _shape_get(record, summary, "totalWork"),
+            "avg_grade_adjusted_speed": _shape_get(record, summary, "avgGradeAdjustedSpeed"),
+            "activity_steps": _shape_get(record, summary, "steps"),
+            "activity_min_hr": _shape_get(record, summary, "minHR"),
+            "direct_workout_feel": _shape_get(record, summary, "directWorkoutFeel"),
+            "direct_workout_rpe": _shape_get(record, summary, "directWorkoutRpe"),
+            "begin_pack_weight": _shape_get(record, summary, "beginPackWeight"),
+            "end_pack_weight": _shape_get(record, summary, "endPackWeight"),
             "raw_json": json.dumps(record),
         },
     )
+    if activity_id is not None:
+        # Stride length only exists on list records (#83); harvest it here.
+        upsert_running_dynamics(conn, activity_id, record)
 
 
 def upsert_training_readiness(conn: sqlite3.Connection, record: dict) -> None:
@@ -2227,8 +2348,10 @@ def upsert_stress(conn: sqlite3.Connection, record: dict, cal_date: str = None) 
         "VALUES (?, ?, ?, ?, ?)",
         (
             d,
-            record.get("avgStressLevel") or record.get("averageStressLevel") or record.get("overallStressLevel"),
-            record.get("maxStressLevel") or record.get("highStressDuration"),
+            _any_key(record, "avgStressLevel", "averageStressLevel", "overallStressLevel"),
+            # max_stress is a 0-100 level; highStressDuration is seconds and
+            # must never land here (#83).
+            record.get("maxStressLevel"),
             record.get("stressQualifier"),
             json.dumps(record),
         ),
@@ -3851,13 +3974,13 @@ def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str
                         """,
                         (
                             _json.dumps(rec),
-                            summary_dto.get("differenceBodyBattery"),
-                            summary_dto.get("totalWork"),
-                            summary_dto.get("avgGradeAdjustedSpeed"),
-                            summary_dto.get("steps"),
-                            summary_dto.get("minHR"),
-                            summary_dto.get("directWorkoutFeel"),
-                            summary_dto.get("directWorkoutRpe"),
+                            _shape_get(rec, summary_dto, "differenceBodyBattery"),
+                            _shape_get(rec, summary_dto, "totalWork"),
+                            _shape_get(rec, summary_dto, "avgGradeAdjustedSpeed"),
+                            _shape_get(rec, summary_dto, "steps"),
+                            _shape_get(rec, summary_dto, "minHR"),
+                            _shape_get(rec, summary_dto, "directWorkoutFeel"),
+                            _shape_get(rec, summary_dto, "directWorkoutRpe"),
                             aid,
                         ),
                     )
