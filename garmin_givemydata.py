@@ -325,6 +325,8 @@ examples:
   python garmin_givemydata.py --export ./my_data        # export DB to CSV + JSON
   python garmin_givemydata.py --export-gpx ./gpx        # export activities as GPX
   python garmin_givemydata.py --export-tcx ./tcx        # export activities as TCX
+  python garmin_givemydata.py --export-kml ./kml        # export activities as KML
+  python garmin_givemydata.py --export-laps ./laps      # export per-activity lap CSVs
 """,
     )
 
@@ -361,6 +363,10 @@ examples:
     export_group.add_argument("--export", type=str, metavar="DIR", help="Export to CSV + JSON")
     export_group.add_argument("--export-gpx", type=str, metavar="DIR", help="Export activities as GPX files")
     export_group.add_argument("--export-tcx", type=str, metavar="DIR", help="Export activities as TCX files")
+    export_group.add_argument("--export-kml", type=str, metavar="DIR", help="Export activities as KML files")
+    export_group.add_argument(
+        "--export-laps", type=str, metavar="DIR", help="Export per-activity lap/split tables as CSV files"
+    )
 
     # FIT-only download
     fit_group = parser.add_argument_group("FIT file download (skip health data sync)")
@@ -448,7 +454,13 @@ examples:
         return
 
     # ── Export (from existing DB, no Garmin login needed) ───
-    if args.export or args.export_gpx or args.export_tcx:
+    file_exports = {
+        "gpx": args.export_gpx,
+        "tcx": args.export_tcx,
+        "kml": args.export_kml,
+        "csv": args.export_laps,
+    }
+    if args.export or any(file_exports.values()):
         from garmin_mcp.export import (
             download_activity_files,
             export_csv,
@@ -463,13 +475,10 @@ examples:
             print("\nJSON files:")
             export_json_tables(out / "json")
 
-        if args.export_gpx:
-            print(f"\nDownloading GPX files to {args.export_gpx}/")
-            download_activity_files(Path(args.export_gpx), file_format="gpx")
-
-        if args.export_tcx:
-            print(f"\nDownloading TCX files to {args.export_tcx}/")
-            download_activity_files(Path(args.export_tcx), file_format="tcx")
+        for file_format, out_dir in file_exports.items():
+            if out_dir:
+                print(f"\nDownloading {file_format.upper()} files to {out_dir}/")
+                download_activity_files(Path(out_dir), file_format=file_format)
         return
 
     # ── Fetch from Garmin ─────────────────────────────────

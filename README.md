@@ -282,6 +282,8 @@ garmin-givemydata --fit-only                   # all FIT files
 garmin-givemydata --export ./output            # CSV + JSON
 garmin-givemydata --export-gpx ./gpx           # GPX (for Strava, Komoot)
 garmin-givemydata --export-tcx ./tcx           # TCX (for TrainingPeaks)
+garmin-givemydata --export-kml ./kml           # KML (for Google Earth)
+garmin-givemydata --export-laps ./laps         # per-activity lap/split CSV
 ```
 
 <details>
@@ -295,6 +297,8 @@ garmin-givemydata --export-tcx ./tcx           # TCX (for TrainingPeaks)
 | **JSON** | Health + activities | `--export ./dir` |
 | **GPX** | Activities (GPS tracks) | `--export-gpx ./dir` |
 | **TCX** | Activities (XML) | `--export-tcx ./dir` |
+| **KML** | Activities (GPS tracks) | `--export-kml ./dir` |
+| **Lap CSV** | Per-activity splits | `--export-laps ./dir` |
 
 </details>
 

@@ -123,5 +123,44 @@ class TestExportCredentialResolution(unittest.TestCase):
         self.assertEqual(captured.get("profile_dir"), garmin_givemydata.PROFILE_DIR)
 
 
+class TestDownloadActivityFiles(unittest.TestCase):
+    def test_kml_and_lap_csv_use_export_endpoint(self):
+        """Issue #21: KML and lap CSV come from the same export service as GPX/TCX."""
+        requested = []
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def login(self):
+                return True
+
+            def download_file(self, api_path):
+                requested.append(api_path)
+                return b"data"
+
+            def close(self):
+                pass
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"GARMIN_EMAIL": "a@b.c", "GARMIN_PASSWORD": "pw"}),
+            patch("garmin_client.GarminClient", FakeClient),
+            patch.object(garmin_givemydata, "load_env", lambda: None),
+        ):
+            for fmt in ("kml", "csv"):
+                export.download_activity_files(Path(tmp), file_format=fmt, activity_ids=[123])
+            files = sorted(f.name for f in Path(tmp).iterdir())
+
+        self.assertEqual(
+            requested,
+            [
+                "/gc-api/download-service/export/kml/activity/123",
+                "/gc-api/download-service/export/csv/activity/123",
+            ],
+        )
+        self.assertEqual(files, ["123.csv", "123.kml"])
+
+
 if __name__ == "__main__":
     unittest.main()
