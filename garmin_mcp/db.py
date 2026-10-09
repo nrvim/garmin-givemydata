@@ -165,6 +165,24 @@ CREATE TABLE IF NOT EXISTS spo2 (
     raw_json                        TEXT
 );
 
+-- On-demand / daytime SpO2 spot checks from wellness/daily/spo2 (#86). These
+-- individual readings (and the hourly averages below) are not in the dailySpo2
+-- sleep array the `spo2` table is built from.
+CREATE TABLE IF NOT EXISTS spo2_spot_reading (
+    calendar_date       TEXT NOT NULL,
+    reading_timestamp   INTEGER NOT NULL,
+    spo2                INTEGER,
+    plottable           INTEGER,
+    PRIMARY KEY (calendar_date, reading_timestamp)
+);
+
+CREATE TABLE IF NOT EXISTS spo2_hourly_average (
+    calendar_date   TEXT NOT NULL,
+    hour_timestamp  INTEGER NOT NULL,
+    avg_spo2        INTEGER,
+    PRIMARY KEY (calendar_date, hour_timestamp)
+);
+
 CREATE TABLE IF NOT EXISTS respiration (
     calendar_date       TEXT PRIMARY KEY,
     avg_waking          REAL,
@@ -2670,6 +2688,83 @@ def upsert_spo2(conn: sqlite3.Connection, record: dict, cal_date: str = None) ->
     )
 
 
+def _is_number(v) -> bool:
+    """True for a real int/float, excluding bool."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _spo2_single_indices(record: dict) -> tuple:
+    """Column indices (timestamp, reading, plottable) for spO2SingleValues rows.
+
+    Defaults match Garmin's order (0=timestamp, 1=spo2Reading,
+    2=singleReadingPlottable); the spO2ValueDescriptorsDTOList overrides them by
+    exact key when present.
+    """
+    ti, ri, pi = 0, 1, 2
+    for desc in record.get("spO2ValueDescriptorsDTOList") or record.get("spo2ValueDescriptorsDTOList") or []:
+        if not isinstance(desc, dict):
+            continue
+        di = desc.get("spo2ValueDescriptorIndex")
+        if not isinstance(di, int):
+            continue
+        key = str(desc.get("spo2ValueDescriptorKey", "")).lower()
+        if key == "timestamp":
+            ti = di
+        elif key == "spo2reading":
+            ri = di
+        elif key in ("singlereadingplottable", "plottable"):
+            pi = di
+    return ti, ri, pi
+
+
+def upsert_spo2_spot(conn: sqlite3.Connection, record: dict, cal_date: str = None) -> int:
+    """Store on-demand/daytime SpO2 spot checks and hourly averages (#86).
+
+    From wellness/daily/spo2, which is complementary to the dailySpo2 endpoint
+    the `spo2` table is built from: dailySpo2 has the per-minute sleep array,
+    this one has the individual spot checks (spO2SingleValues) and the hourly
+    averages (spO2HourlyAverages) that otherwise never reach the database.
+    Returns the number of reading/average rows written.
+    """
+    d = cal_date or record.get("calendarDate") or record.get("date")
+    if not d:
+        return 0
+    n = 0
+
+    singles = record.get("spO2SingleValues")
+    if isinstance(singles, list):
+        ti, ri, pi = _spo2_single_indices(record)
+        for row in singles:
+            if not isinstance(row, (list, tuple)) or len(row) <= max(ti, ri):
+                continue
+            ts, val = row[ti], row[ri]
+            if not _is_number(ts) or not _is_number(val):
+                continue
+            plot = row[pi] if len(row) > pi else None
+            conn.execute(
+                "INSERT OR REPLACE INTO spo2_spot_reading "
+                "(calendar_date, reading_timestamp, spo2, plottable) VALUES (?, ?, ?, ?)",
+                (d, int(ts), val, (1 if plot else 0) if plot is not None else None),
+            )
+            n += 1
+
+    hourly = record.get("spO2HourlyAverages")
+    if isinstance(hourly, list):
+        for row in hourly:
+            if not isinstance(row, (list, tuple)) or len(row) < 2:
+                continue
+            ts, val = row[0], row[1]
+            if not _is_number(ts) or not _is_number(val):
+                continue
+            conn.execute(
+                "INSERT OR REPLACE INTO spo2_hourly_average (calendar_date, hour_timestamp, avg_spo2) VALUES (?, ?, ?)",
+                (d, int(ts), val),
+            )
+            n += 1
+
+    return n
+
+
 def upsert_respiration(conn: sqlite3.Connection, record: dict, cal_date: str = None) -> None:
     d = cal_date or record.get("calendarDate") or record.get("date")
     if not d:
@@ -3895,6 +3990,7 @@ _DAILY_SIGNAL_FIELDS = {
     "heart_rate_detail": ("restingHeartRate", "minHeartRate", "maxHeartRate", "heartRateValues"),
     "stress": ("avgStressLevel", "maxStressLevel", "stressValuesArray"),
     "spo2": ("averageSpO2", "lowestSpO2", "latestSpO2", "spo2ValuesArray"),
+    "spo2_spot": ("spO2SingleValues", "spO2HourlyAverages", "latestSpO2", "avgSleepSpO2"),
     "respiration": (
         "avgWakingRespirationValue",
         "avgSleepRespirationValue",
@@ -4029,6 +4125,10 @@ def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str
             for rec in records:
                 upsert_spo2(conn, rec, cal_date)
                 count += 1
+
+        elif name == "spo2_spot":
+            for rec in records:
+                count += upsert_spo2_spot(conn, rec, cal_date)
 
         elif name == "respiration":
             for rec in records:
