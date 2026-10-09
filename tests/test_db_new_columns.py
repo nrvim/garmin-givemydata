@@ -877,10 +877,14 @@ class TestHealthSnapshot:
         assert row["wellness_activity_type"] == "HEALTH_SNAPSHOT"
 
     def test_missing_fields_are_null(self, temp_db):
-        upsert_health_snapshot(temp_db, {"calendarDate": "2026-05-09"})
-        row = _row(temp_db, "health_snapshot", "calendar_date", "2026-05-09")
+        # A snapshot now needs an identity (uuid or start time) to be stored;
+        # keyed on that, the other optional fields and summary columns are NULL
+        # when the payload omits them.
+        upsert_health_snapshot(temp_db, {"startTimestampLocal": "2026-05-09T08:00:00"})
+        row = _row(temp_db, "health_snapshot", "start_timestamp_local", "2026-05-09T08:00:00")
         assert row["activity_name"] is None
-        assert row["start_timestamp_local"] is None
+        assert row["calendar_date"] is None
+        assert row["hr_avg"] is None
 
 
 # ---------------------------------------------------------------------------
