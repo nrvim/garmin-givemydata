@@ -93,22 +93,20 @@ def incremental_sync(
     effective_start = start_date or yesterday
     is_backfill = start_date is not None and start_date != yesterday
 
-    PROJECT_DIR = Path(__file__).parent.parent
-    PROFILE_DIR = PROJECT_DIR / "browser_profile"
+    # Resolve credentials, browser profile and session from the real data
+    # directory (GARMIN_DATA_DIR / cwd / ~/.garmin-givemydata), not the
+    # installed package location. On pip/pipx/brew installs the package lives
+    # in site-packages, where no .env exists, so the sync always failed with
+    # "Credentials not found". Same fix as #63 for the export path.
+    from garmin_givemydata import DATA_DIR, PROFILE_DIR, SESSION_FILE, load_env
 
     # When launched as an MCP server, the host's CWD may be a system path
     # with no write access (e.g. C:\Windows\System32 on Windows). SeleniumBase
     # creates downloaded_files/ relative to CWD, which then crashes the sync
-    # with PermissionError. Move into PROJECT_DIR. See issue #35.
-    os.chdir(str(PROJECT_DIR))
+    # with PermissionError. Move into DATA_DIR. See issue #35.
+    os.chdir(str(DATA_DIR))
 
-    env_file = PROJECT_DIR / ".env"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, value = line.partition("=")
-                os.environ.setdefault(key.strip(), value.strip())
+    load_env()
 
     email = os.environ.get("GARMIN_EMAIL", "")
     password = os.environ.get("GARMIN_PASSWORD", "")
@@ -141,7 +139,6 @@ def incremental_sync(
             except (ValueError, TypeError):
                 pass
 
-    SESSION_FILE = PROJECT_DIR / "garmin_session.json"
     client = GarminClient(
         email=email,
         password=password,
