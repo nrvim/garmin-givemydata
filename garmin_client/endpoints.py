@@ -130,6 +130,7 @@ def daily_rest(display_name: str, date: str) -> dict:
         "daily_movement": f"/gc-api/wellness-service/wellness/dailyMovement?calendarDate={date}",
         "endurance_score": f"/gc-api/metrics-service/metrics/endurancescore?calendarDate={date}",
         "hill_score": f"/gc-api/metrics-service/metrics/hillscore?calendarDate={date}",
+        "training_load_balance": f"/gc-api/metrics-service/metrics/trainingloadbalance/latest/{date}",
         "race_predictions": f"/gc-api/metrics-service/metrics/racepredictions/daily/{dn}?fromCalendarDate={date}&toCalendarDate={date}",
         "hrv_timeline": f"/gc-api/hrv-service/hrv/{date}",
     }
