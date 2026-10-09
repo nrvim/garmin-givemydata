@@ -1,8 +1,10 @@
 """Regression tests for garmin_mcp.sync."""
 
 import os
+import sqlite3
 import tempfile
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -49,6 +51,56 @@ class TestIncrementalSyncChdir(unittest.TestCase):
                 incremental_sync()
 
             self.assertEqual(Path(os.getcwd()).resolve(), PROJECT_DIR)
+
+
+class TestCatchUpStart(unittest.TestCase):
+    """The default sync window used to be yesterday..today, so activities
+    recorded between the previous sync and yesterday were never fetched by
+    garmin_sync. The window must start the day before the last ok sync."""
+
+    TODAY = "2026-10-09"
+
+    def setUp(self):
+        from garmin_mcp.db import init_db
+
+        self.conn = sqlite3.connect(":memory:")
+        init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _log(self, sync_date, status="ok"):
+        self.conn.execute(
+            "INSERT INTO sync_log (sync_date, sync_type, records_upserted, status) VALUES (?, ?, ?, ?)",
+            (sync_date, "incremental_sync", 1, status),
+        )
+
+    def _start(self):
+        from garmin_mcp.sync import _catch_up_start
+
+        return _catch_up_start(self.conn, self.TODAY)
+
+    def test_no_previous_sync_defaults_to_yesterday(self):
+        self.assertEqual(self._start(), "2026-10-08")
+
+    def test_gap_since_last_sync_is_covered(self):
+        self._log("2026-10-02T16:46:46.673462+00:00")
+        self.assertEqual(self._start(), "2026-10-01")
+
+    def test_failed_syncs_are_ignored(self):
+        self._log("2026-10-02T16:46:46+00:00")
+        self._log("2026-10-08T10:00:00+00:00", status="error")
+        self.assertEqual(self._start(), "2026-10-01")
+
+    def test_recent_sync_still_includes_yesterday(self):
+        self._log("2026-10-09T07:00:00+00:00")
+        self.assertEqual(self._start(), "2026-10-08")
+
+    def test_long_gap_is_capped(self):
+        from garmin_mcp.sync import MAX_CATCH_UP_DAYS
+
+        self._log("2026-01-01T00:00:00+00:00")
+        self.assertEqual(self._start(), (date(2026, 10, 9) - timedelta(days=MAX_CATCH_UP_DAYS)).isoformat())
 
 
 if __name__ == "__main__":
