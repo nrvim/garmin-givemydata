@@ -1,8 +1,8 @@
 """
 Incremental sync module for Garmin MCP server.
 
-Fetches today's and yesterday's data from Garmin Connect and saves it
-directly to SQLite via save_to_db().
+Fetches everything since the last successful sync (at least yesterday and
+today) from Garmin Connect and saves it directly to SQLite via save_to_db().
 """
 
 import logging
@@ -13,6 +13,29 @@ from pathlib import Path
 from garmin_mcp.db import DB_PATH, get_connection, init_db, save_to_db
 
 logger = logging.getLogger(__name__)
+
+# How far back the default (catch-up) window may reach. Longer gaps need an
+# explicit start_date so a single MCP sync stays within its timeout.
+MAX_CATCH_UP_DAYS = 30
+
+
+def _catch_up_start(conn, today: str) -> str:
+    """Default start of the sync window: the day before the last successful
+    sync, clamped to [today - MAX_CATCH_UP_DAYS, yesterday].
+
+    A fixed yesterday-to-today window silently skips every day between the
+    previous sync and yesterday, so activities recorded in that gap were
+    never fetched.
+    """
+    today_d = date.fromisoformat(today)
+    yesterday = today_d - timedelta(days=1)
+    row = conn.execute("SELECT MAX(sync_date) FROM sync_log WHERE status = 'ok'").fetchone()
+    try:
+        last_sync = datetime.fromisoformat(row[0]).date()
+    except (TypeError, ValueError, IndexError):
+        return yesterday.isoformat()
+    start = min(last_sync - timedelta(days=1), yesterday)
+    return max(start, today_d - timedelta(days=MAX_CATCH_UP_DAYS)).isoformat()
 
 
 def _parse_trackpoints_for_activities(conn, activity_ids):
@@ -58,7 +81,9 @@ def incremental_sync(
         the actual current date.
     start_date:
         ISO date string (``YYYY-MM-DD``) for the beginning of the fetch range.
-        Defaults to yesterday (incremental). Set to an early date for full-history sync.
+        Defaults to the day before the last successful sync (at most
+        ``MAX_CATCH_UP_DAYS`` back, at least yesterday). Set to an early date
+        for full-history sync.
     save_raw:
         Whether to save raw JSON responses under the ``debug/raw`` directory
         (next to ``browser_profile``).
@@ -90,7 +115,6 @@ def incremental_sync(
                 "status": "error",
                 "message": f"start_date ({start_date}) must be on or before target_date ({today})",
             }
-    effective_start = start_date or yesterday
     is_backfill = start_date is not None and start_date != yesterday
 
     # Resolve credentials, browser profile and session from the real data
@@ -119,6 +143,8 @@ def incremental_sync(
     # Open DB connection for direct writes
     conn = get_connection()
     init_db(conn)
+
+    effective_start = start_date or _catch_up_start(conn, today)
 
     # Build set of already-fetched activity IDs so fetch_all() skips them
     existing = conn.execute("SELECT DISTINCT activity_id FROM activity_splits").fetchall()
@@ -209,7 +235,7 @@ if __name__ == "__main__":
         epilog="Example: python -m garmin_mcp.sync --start-date 2018-01-01 (full history backfill)",
     )
     parser.add_argument("target_date", nargs="?", help="YYYY-MM-DD (default: today)")
-    parser.add_argument("--start-date", help="YYYY-MM-DD start of range (default: yesterday)")
+    parser.add_argument("--start-date", help="YYYY-MM-DD start of range (default: day before last sync)")
     args = parser.parse_args()
     result = incremental_sync(target_date=args.target_date, start_date=args.start_date)
     print(result)
