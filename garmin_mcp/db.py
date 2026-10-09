@@ -1336,6 +1336,83 @@ def migrate_exercise_set_names(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def migrate_training_status_backfill(conn: sqlite3.Connection) -> None:
+    """Re-derive status/acute_load/chronic_load for training_status rows (#85).
+
+    Rows written by older versions left these columns NULL even though
+    raw_json carries latestTrainingStatusData (trainingStatus /
+    trainingStatusFeedbackPhrase + acuteTrainingLoadDTO). The current
+    upsert_training_status() extracts them correctly, so replaying each
+    stored record through it recovers the values. INSERT OR REPLACE keyed on
+    calendar_date means this overwrites only the same row, and the WHERE
+    filter makes it idempotent (a backfilled row has a non-NULL status).
+    """
+    rows = conn.execute(
+        """SELECT calendar_date, raw_json FROM training_status
+           WHERE status IS NULL
+             AND json_valid(raw_json)
+             AND json_type(raw_json, '$.latestTrainingStatusData') = 'object'"""
+    ).fetchall()
+    updated = 0
+    for cal_date, raw in rows:
+        try:
+            record = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        # Pin the write to the row we selected (its stored PK), not the date
+        # embedded in raw_json. Those usually match on the daily path, but the
+        # weekly path stores rows under an explicit cal_date that can differ,
+        # so re-deriving the date risks duplicating or clobbering another day.
+        upsert_training_status(conn, record, cal_date=cal_date)
+        updated += 1
+    if updated:
+        log.info("Backfilled training_status for %d rows", updated)
+    conn.commit()
+
+
+def cleanup_daily_summary_wrappers(conn: sqlite3.Connection) -> None:
+    """Drop pre-#61 daily_summary rows that stored a whole range response (#85).
+
+    Before the #61 date guard, a {"data": [...]} range payload was stored as a
+    single row with a NULL calendar_date (the TEXT primary key allows NULL, so
+    each became a new row instead of replacing anything). Every day inside such
+    a wrapper already exists as a proper per-day row, so these are pure clutter
+    that inflate COUNT(*). Signature-matched and idempotent.
+    """
+    cur = conn.execute(
+        """DELETE FROM daily_summary
+           WHERE calendar_date IS NULL
+             AND json_valid(raw_json)
+             AND json_type(raw_json, '$.data') = 'array'"""
+    )
+    if cur.rowcount:
+        log.info("Removed %d NULL-date daily_summary wrapper rows", cur.rowcount)
+    conn.commit()
+
+
+def cleanup_body_battery_error_rows(conn: sqlite3.Connection) -> None:
+    """Drop body_battery rows that stored a GraphQL error envelope (#85).
+
+    Older versions could persist an error envelope ({"data": ..., "errors":
+    [...]}) as if it were a day's body battery. Current code no longer stores
+    these; this removes the residue. Only rows that carry an errors array AND
+    have no usable data in any column are removed, so a partial-success
+    response (real values plus a warning errors array) is kept. json_valid
+    guards against a legacy malformed row aborting init_db. Idempotent.
+    """
+    cur = conn.execute(
+        """DELETE FROM body_battery
+           WHERE charged IS NULL AND drained IS NULL AND highest IS NULL
+             AND lowest IS NULL AND most_recent IS NULL AND at_wake IS NULL
+             AND during_sleep IS NULL
+             AND json_valid(raw_json)
+             AND json_type(raw_json, '$.errors') = 'array'"""
+    )
+    if cur.rowcount:
+        log.info("Removed %d body_battery error-envelope rows", cur.rowcount)
+    conn.commit()
+
+
 def migrate_activity_table(conn: sqlite3.Connection) -> None:
     """Add new columns to activity table and backfill from raw_json.
 
@@ -1585,6 +1662,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     migrate_health_status(conn)
     migrate_calories_consumed(conn)
     migrate_exercise_set_names(conn)
+    migrate_training_status_backfill(conn)
+    cleanup_daily_summary_wrappers(conn)
+    cleanup_body_battery_error_rows(conn)
 
     # Only run cleanup/backfill when there are rows that actually need it.
     needs_cleanup = conn.execute(
