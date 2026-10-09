@@ -117,6 +117,7 @@ def daily_rest(display_name: str, date: str) -> dict:
         "sleep": f"/gc-api/wellness-service/wellness/dailySleepData/{dn}?date={date}",
         "stress": f"/gc-api/wellness-service/wellness/dailyStress/{date}",
         "spo2": f"/gc-api/wellness-service/wellness/dailySpo2/{date}",
+        "spo2_spot": f"/gc-api/wellness-service/wellness/daily/spo2/{date}",
         "steps": f"/gc-api/usersummary-service/stats/steps/daily/{date}/{date}",
         "respiration": f"/gc-api/wellness-service/wellness/daily/respiration/{date}",
         "floors": f"/gc-api/wellness-service/wellness/floorsChartData/daily/{date}",
