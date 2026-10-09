@@ -27,7 +27,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from garmin_client import GarminClient
-from garmin_mcp.db import get_connection, init_db, record_fit_parse, save_to_db
+from garmin_mcp.db import (
+    DEFAULT_REFETCH_RECENT_DAYS,
+    get_connection,
+    init_db,
+    recent_activity_ids,
+    record_fit_parse,
+    save_to_db,
+    widen_start_for_refetch,
+)
 from garmin_mcp.db import query as db_query
 
 
@@ -122,6 +130,7 @@ def fetch_direct_to_db(
     start_date: str,
     end_date: str,
     save_raw: bool = False,
+    refetch_recent_days: int = None,
 ) -> None:
     """Fetch data and save each batch directly to SQLite."""
     counts = {}
@@ -134,6 +143,16 @@ def fetch_direct_to_db(
         "SELECT DISTINCT activity_id FROM activity_splits",
     )
     known_activity_ids = {r["activity_id"] for r in existing}
+
+    # Re-fetch details for recently-started activities so edits made after the
+    # first sync (e.g. self-evaluation feel/RPE, which live only in the details
+    # payload) are picked up. #85 finding 4.
+    if refetch_recent_days is None:
+        refetch_recent_days = DEFAULT_REFETCH_RECENT_DAYS
+    refresh = recent_activity_ids(conn, end_date, refetch_recent_days)
+    if refresh:
+        known_activity_ids -= refresh
+        print(f"  Re-fetching details for {len(refresh)} activities from the last {refetch_recent_days} days")
 
     def on_batch(endpoint_name, data, cal_date=None):
         n = save_to_db(conn, endpoint_name, data, cal_date=cal_date)
@@ -511,6 +530,16 @@ examples:
         "--save-raw", action="store_true", help="Save raw JSON responses to debug/raw for debugging"
     )
     fetch_group.add_argument(
+        "--refetch-recent-days",
+        type=int,
+        default=DEFAULT_REFETCH_RECENT_DAYS,
+        metavar="N",
+        help=(
+            "Re-fetch activity details for activities started in the last N days each sync, "
+            f"so edits made after the first sync (e.g. feel/RPE) are picked up (default: {DEFAULT_REFETCH_RECENT_DAYS}; 0 disables)"
+        ),
+    )
+    fetch_group.add_argument(
         "--no-files",
         action="store_true",
         help="Skip FIT file downloads (only fetch API data to SQLite)",
@@ -717,7 +746,11 @@ examples:
         last = date.fromisoformat(status["last_date"])
         start = (last - timedelta(days=1)).isoformat()
         end = today.isoformat()
-        gap_days = (today - last).days
+        # Widen to cover the re-fetch window so recently-edited activities appear
+        # in the fetched list and their details refresh (#85 finding 4). Only the
+        # auto incremental path is widened; explicit --days/--since are respected.
+        start = widen_start_for_refetch(start, today.isoformat(), args.refetch_recent_days)
+        gap_days = (today - date.fromisoformat(start)).days
         print(f"Database has data through {status['last_date']} ({status['rows']} daily records)")
         print(f"Fetching {gap_days + 1} days: {start} to {end}")
 
@@ -820,7 +853,9 @@ examples:
             print("Login failed!")
             sys.exit(1)
 
-        fetch_direct_to_db(client, conn, start, end, save_raw=args.save_raw)
+        fetch_direct_to_db(
+            client, conn, start, end, save_raw=args.save_raw, refetch_recent_days=args.refetch_recent_days
+        )
 
         # Report actual row counts from the database (not upsert operations)
         tables = db_query(
