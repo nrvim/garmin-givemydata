@@ -1413,6 +1413,63 @@ def cleanup_body_battery_error_rows(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def migrate_spo2_max_backfill(conn: sqlite3.Connection) -> None:
+    """Fill spo2.max_spo2 from the per-minute spo2ValuesArray (#85).
+
+    The payload carries no max key, so older rows (and rows written before the
+    upsert computed it) have max_spo2 NULL even though the readings are present
+    in raw_json. json_valid guards against a malformed legacy row; idempotent
+    (a filled row no longer matches max_spo2 IS NULL).
+    """
+    rows = conn.execute(
+        """SELECT calendar_date, raw_json FROM spo2
+           WHERE max_spo2 IS NULL
+             AND json_valid(raw_json)
+             AND json_type(raw_json, '$.spo2ValuesArray') = 'array'"""
+    ).fetchall()
+    updated = 0
+    for cal_date, raw in rows:
+        try:
+            m = _max_spo2_from_record(json.loads(raw))
+        except (TypeError, ValueError):
+            continue
+        if m is not None:
+            conn.execute("UPDATE spo2 SET max_spo2 = ? WHERE calendar_date = ?", (m, cal_date))
+            updated += 1
+    if updated:
+        log.info("Backfilled spo2 max for %d rows", updated)
+    conn.commit()
+
+
+def migrate_hrv_timestamps_from_timeline(conn: sqlite3.Connection) -> None:
+    """Fill hrv.start_timestamp/end_timestamp from the matching hrv_timeline (#85).
+
+    The HRV summary payload never carries start/end timestamps, but the
+    per-night hrv_timeline payload does, for the same calendar_date (its window
+    sits inside the sleep window). Prefer the Local timestamps, like upsert_hrv.
+    Only rows that still lack a start timestamp and have a VALID matching
+    timeline row are touched; idempotent.
+    """
+    conn.execute(
+        """UPDATE hrv
+           SET start_timestamp = (
+                 SELECT COALESCE(json_extract(t.raw_json, '$.startTimestampLocal'),
+                                 json_extract(t.raw_json, '$.startTimestampGMT'))
+                 FROM hrv_timeline t WHERE t.calendar_date = hrv.calendar_date),
+               end_timestamp = (
+                 SELECT COALESCE(json_extract(t.raw_json, '$.endTimestampLocal'),
+                                 json_extract(t.raw_json, '$.endTimestampGMT'))
+                 FROM hrv_timeline t WHERE t.calendar_date = hrv.calendar_date)
+           WHERE start_timestamp IS NULL
+             AND EXISTS (SELECT 1 FROM hrv_timeline t
+                         WHERE t.calendar_date = hrv.calendar_date
+                           AND json_valid(t.raw_json)
+                           AND (json_extract(t.raw_json, '$.startTimestampLocal') IS NOT NULL
+                                OR json_extract(t.raw_json, '$.startTimestampGMT') IS NOT NULL))"""
+    )
+    conn.commit()
+
+
 def migrate_activity_table(conn: sqlite3.Connection) -> None:
     """Add new columns to activity table and backfill from raw_json.
 
@@ -1665,6 +1722,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     migrate_training_status_backfill(conn)
     cleanup_daily_summary_wrappers(conn)
     cleanup_body_battery_error_rows(conn)
+    migrate_spo2_max_backfill(conn)
+    migrate_hrv_timestamps_from_timeline(conn)
 
     # Only run cleanup/backfill when there are rows that actually need it.
     needs_cleanup = conn.execute(
@@ -2556,6 +2615,40 @@ def upsert_stress(conn: sqlite3.Connection, record: dict, cal_date: str = None) 
     )
 
 
+def _max_spo2_from_record(record: dict):
+    """Highest SpO2 reading from the per-minute spo2ValuesArray, or None (#85).
+
+    The payload has no max key (only averageSpO2 / lowestSpO2), but the
+    spo2ValuesArray carries the individual readings. The spo2ValueDescriptorsDTOList
+    gives the column index of the reading value (key 'spo2Reading'); default to
+    index 1 when the descriptor list is absent. Non-numeric / non-positive
+    readings are ignored.
+    """
+    if not isinstance(record, dict):
+        return None
+    arr = record.get("spo2ValuesArray")
+    if not isinstance(arr, list) or not arr:
+        return None
+    idx = 1
+    for desc in record.get("spo2ValueDescriptorsDTOList") or []:
+        # Match the reading column exactly: "reading" as a substring would also
+        # match "readingConfidence", picking the wrong column if Garmin ever
+        # reorders the descriptor list.
+        if isinstance(desc, dict) and str(desc.get("spo2ValueDescriptorKey", "")).lower() == "spo2reading":
+            di = desc.get("spo2ValueDescriptorIndex")
+            if isinstance(di, int):
+                idx = di
+            break
+    best = None
+    for row in arr:
+        if not isinstance(row, (list, tuple)) or len(row) <= idx:
+            continue
+        v = row[idx]
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            best = v if best is None else max(best, v)
+    return best
+
+
 def upsert_spo2(conn: sqlite3.Connection, record: dict, cal_date: str = None) -> None:
     d = cal_date or record.get("calendarDate") or record.get("date")
     if not d:
@@ -2568,7 +2661,8 @@ def upsert_spo2(conn: sqlite3.Connection, record: dict, cal_date: str = None) ->
             d,
             record.get("averageSpo2") or record.get("averageSpO2"),
             record.get("lowestSpo2") or record.get("lowestSpO2"),
-            record.get("latestSpo2") or record.get("latestSpO2"),
+            # No max key in the payload; derive it from the per-minute readings.
+            _max_spo2_from_record(record),
             record.get("numberOfEventsBelowThreshold"),
             record.get("durationOfEventsBelowThreshold"),
             json.dumps(record),
