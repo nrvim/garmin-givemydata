@@ -1307,6 +1307,35 @@ def migrate_stress_max_level(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def migrate_exercise_set_names(conn: sqlite3.Connection) -> None:
+    """Backfill exercise_name/exercise_category from raw_json.
+
+    Before #48 the upsert read top-level exerciseName/exerciseCategory keys,
+    but Garmin nests them in an 'exercises' candidate list, so every set
+    stored by older versions has both columns NULL. Activities with existing
+    details are never re-fetched, so those rows stay empty without this, and
+    garmin_activity_detail drops sets that have neither field.
+    """
+    rows = conn.execute(
+        """SELECT activity_id, set_number, raw_json FROM activity_exercise_sets
+           WHERE exercise_name IS NULL AND exercise_category IS NULL
+             AND json_extract(raw_json, '$.exercises[0]') IS NOT NULL"""
+    ).fetchall()
+    updated = 0
+    for activity_id, set_number, raw in rows:
+        name, category = _best_exercise(json.loads(raw))
+        if name or category:
+            conn.execute(
+                """UPDATE activity_exercise_sets SET exercise_name = ?, exercise_category = ?
+                   WHERE activity_id = ? AND set_number = ?""",
+                (name, category, activity_id, set_number),
+            )
+            updated += 1
+    if updated:
+        log.info("Backfilled exercise names for %d exercise sets", updated)
+    conn.commit()
+
+
 def migrate_activity_table(conn: sqlite3.Connection) -> None:
     """Add new columns to activity table and backfill from raw_json.
 
@@ -1555,6 +1584,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     migrate_floors_totals(conn)
     migrate_health_status(conn)
     migrate_calories_consumed(conn)
+    migrate_exercise_set_names(conn)
 
     # Only run cleanup/backfill when there are rows that actually need it.
     needs_cleanup = conn.execute(
@@ -3128,6 +3158,13 @@ def upsert_activity_weather(conn: sqlite3.Connection, activity_id: int, data) ->
     )
 
 
+def _best_exercise(s: dict) -> tuple:
+    """Return (name, category) of the most likely exercise for one set."""
+    exercises = s.get("exercises") or []
+    best = max(exercises, key=lambda e: e.get("probability") or 0) if exercises else {}
+    return best.get("name") or s.get("exerciseName"), best.get("category") or s.get("exerciseCategory")
+
+
 def upsert_activity_exercise_sets(conn: sqlite3.Connection, activity_id: int, data) -> int:
     if not data:
         return 0
@@ -3138,10 +3175,7 @@ def upsert_activity_exercise_sets(conn: sqlite3.Connection, activity_id: int, da
         # each set. That list is a ranked set of candidate classifications, each
         # with a 'probability' — pick the most likely one rather than assuming
         # list order. Fall back to top-level keys for backward compatibility.
-        exercises = s.get("exercises") or []
-        best_exercise = max(exercises, key=lambda e: e.get("probability") or 0) if exercises else {}
-        exercise_name = best_exercise.get("name") or s.get("exerciseName")
-        exercise_category = best_exercise.get("category") or s.get("exerciseCategory")
+        exercise_name, exercise_category = _best_exercise(s)
         # repetitionCount can legitimately be 0 (e.g. a timed hold); only fall
         # back to 'reps' when the key is genuinely absent, not when it is 0.
         reps = s.get("repetitionCount")
