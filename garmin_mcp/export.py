@@ -416,12 +416,15 @@ def export_json_tables(output_dir: Path):
     conn.close()
 
 
+EXPORT_FORMATS = ("gpx", "tcx", "kml", "csv")
+
+
 def download_activity_files(
     output_dir: Path,
     file_format: str = "fit",
     activity_ids: Optional[list] = None,
 ):
-    """Download original activity files (FIT, GPX, or TCX) from Garmin Connect.
+    """Download activity files (FIT, GPX, TCX, KML, or lap CSV) from Garmin Connect.
 
     Requires an active browser session (Playwright).
     """
@@ -443,19 +446,15 @@ def download_activity_files(
         print("  No activities found in database.")
         return
 
-    # Build download URLs based on format
-    # FIT uses /modern/proxy/ prefix, GPX/TCX use /modern/proxy/ with export path
     if file_format == "fit":
         url_pattern = "/gc-api/download-service/files/activity/{id}"
         ext = ".zip"  # FIT downloads come as ZIP
-    elif file_format == "gpx":
-        url_pattern = "/gc-api/download-service/export/gpx/activity/{id}"
-        ext = ".gpx"
-    elif file_format == "tcx":
-        url_pattern = "/gc-api/download-service/export/tcx/activity/{id}"
-        ext = ".tcx"
+    elif file_format in EXPORT_FORMATS:
+        # "csv" is Garmin's per-activity lap/split table, not a DB export
+        url_pattern = f"/gc-api/download-service/export/{file_format}/activity/{{id}}"
+        ext = f".{file_format}"
     else:
-        print(f"  Unknown format: {file_format}. Use fit, gpx, or tcx.")
+        print(f"  Unknown format: {file_format}. Use fit, {', '.join(EXPORT_FORMATS)}.")
         return
 
     print(f"  Downloading {len(activity_ids)} activities as {file_format.upper()}...")
