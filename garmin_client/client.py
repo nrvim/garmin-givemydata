@@ -12,6 +12,7 @@ import atexit
 import json
 import logging
 import os as _os
+import platform
 import shutil
 import signal
 import sys
@@ -21,10 +22,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from selenium.common.exceptions import WebDriverException
-from selenium.webdriver.common.action_chains import ActionChains
+from selenium.common.exceptions import NoSuchElementException, WebDriverException
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from seleniumbase import Driver
@@ -56,6 +55,9 @@ SSO_LOGIN_URL = (
 CSRF_TTL = 1800  # 30 minutes — re-read meta tag after this
 _XVFB_SCREEN = "1920x1080x24"
 _SENTINEL = ".garmin_clean_exit"
+# SeleniumBase UC mode ships an Intel-only uc_driver on Apple Silicon, so it
+# needs Rosetta 2. Pure CDP mode drives the native Chrome with no chromedriver.
+_USE_CDP = sys.platform == "darwin" and platform.machine() == "arm64"
 
 
 # ─── Process lifecycle ───────────────────────────────────────────
@@ -98,6 +100,82 @@ class _ProcessLifecycle:
             self._cleanup()
         except Exception:
             pass
+
+
+# ─── Pure CDP driver (Apple Silicon) ─────────────────────────────
+
+
+class _CdpDriver:
+    """Selenium-shaped wrapper over SeleniumBase pure CDP mode.
+
+    Covers only the driver calls GarminClient makes, so the login flow and
+    the in-page fetch scripts run unchanged on both engines.
+    """
+
+    def __init__(self, **kwargs):
+        from seleniumbase import sb_cdp
+
+        self._sb = sb_cdp.Chrome(**kwargs)
+        self.switch_to = self  # GarminClient calls switch_to.window(handle)
+
+    def _eval(self, expression: str):
+        try:
+            return self._sb.loop.run_until_complete(self._sb.page.evaluate(expression, await_promise=True))
+        except Exception as e:
+            # Keep _fetch_batch's WebDriverException retry path working.
+            raise WebDriverException(str(e)) from e
+
+    def execute_script(self, script: str):
+        return self._eval(f"(function() {{ {script} }})()")
+
+    def execute_async_script(self, script: str, *args):
+        # Selenium passes a completion callback as the last argument.
+        return self._eval(
+            "new Promise(function(done) {"
+            f" (function() {{ {script} }}).apply(null, {json.dumps(list(args))}.concat([done]));"
+            " })"
+        )
+
+    @property
+    def current_url(self) -> str:
+        return self._sb.get_current_url()
+
+    @property
+    def window_handles(self):
+        return self._sb.get_tabs()
+
+    @property
+    def current_window_handle(self):
+        return self._sb.get_active_tab()
+
+    def window(self, handle) -> None:
+        self._sb.switch_to_tab(handle)
+
+    def get(self, url: str) -> None:
+        self._sb.open(url)
+
+    def uc_open_with_reconnect(self, url: str, _reconnect_time=None) -> None:
+        self._sb.open(url)
+
+    def set_script_timeout(self, _seconds) -> None:
+        pass  # in-page fetches carry their own AbortSignal timeouts
+
+    def find_element(self, _by, selector: str):
+        try:
+            el = self._sb.find_element(selector, timeout=0.5)
+        except Exception:
+            raise NoSuchElementException(selector)
+        el.clear = el.clear_input
+        return el
+
+    def get_cookies(self) -> list:
+        return [c.to_json() for c in self._sb.get_all_cookies()]
+
+    def delete_all_cookies(self) -> None:
+        self._sb.clear_cookies()
+
+    def quit(self) -> None:
+        self._sb.quit()
 
 
 # ─── Garmin Client ───────────────────────────────────────────────
@@ -321,7 +399,10 @@ class GarminClient:
             driver_kwargs["headless2"] = True
 
         try:
-            self._driver = Driver(**driver_kwargs)
+            if _USE_CDP:
+                self._driver = _CdpDriver(user_data_dir=str(self.profile_dir), headless=use_headless2, lang="en-US")
+            else:
+                self._driver = Driver(**driver_kwargs)
         except Exception:
             self._stop_xvfb()
             raise
@@ -337,7 +418,7 @@ class GarminClient:
         self._lifecycle = _ProcessLifecycle(self.close)
         self._lifecycle.install()
 
-        log.info("Browser engine: SeleniumBase UC (Chrome)")
+        log.info("Browser engine: SeleniumBase %s (Chrome)", "CDP" if _USE_CDP else "UC")
 
     # ── Browser helpers ──────────────────────────────────────────
 
@@ -351,13 +432,11 @@ class GarminClient:
         except Exception:
             pass
 
-    def _type_slowly(self, text: str, delay_s: float = 0.03) -> None:
+    def _type_slowly(self, element, text: str, delay_s: float = 0.03) -> None:
         """Type text with delays between keystrokes for stealth."""
-        actions = ActionChains(self._driver)
         for char in text:
-            actions.send_keys(char)
-            actions.pause(delay_s)
-        actions.perform()
+            element.send_keys(char)
+            time.sleep(delay_s)
 
     # ── Login flow ───────────────────────────────────────────────
 
@@ -430,7 +509,7 @@ class GarminClient:
             return False
 
         email_input.click()
-        self._type_slowly(self.email, delay_s=0.03)
+        self._type_slowly(email_input, self.email, delay_s=0.03)
 
         try:
             pwd_input = WebDriverWait(self._driver, 5).until(
@@ -441,7 +520,7 @@ class GarminClient:
             return False
 
         pwd_input.click()
-        self._type_slowly(self.password, delay_s=0.03)
+        self._type_slowly(pwd_input, self.password, delay_s=0.03)
 
         # Auto-check "Remember Me"
         try:
@@ -456,7 +535,7 @@ class GarminClient:
             submit = self._driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]')
             submit.click()
         except Exception:
-            ActionChains(self._driver).send_keys(Keys.ENTER).perform()
+            pwd_input.send_keys("\n")
 
         print("Credentials submitted, waiting for Garmin...")
 
@@ -610,7 +689,7 @@ class GarminClient:
                     )
                     submit_btn.click()
                 except Exception:
-                    mfa_input.send_keys(Keys.ENTER)
+                    mfa_input.send_keys("\n")
 
                 log.info("MFA code submitted via browser")
                 return
