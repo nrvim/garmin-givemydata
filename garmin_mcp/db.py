@@ -3018,6 +3018,39 @@ def upsert_endurance_score(conn: sqlite3.Connection, record: dict, cal_date: str
     )
 
 
+def upsert_load_focus(conn: sqlite3.Connection, record: dict, cal_date: str = None) -> None:
+    """Store Garmin's training load balance ("Load Focus") for one day.
+
+    The payload is keyed by device ID; prefer the primary training device.
+    Monthly loads per zone go into columns, the target ranges stay in raw_json.
+    """
+    dto_map = record.get("metricsTrainingLoadBalanceDTOMap")
+    if not isinstance(dto_map, dict) or not dto_map:
+        return
+    dtos = [v for v in dto_map.values() if isinstance(v, dict)]
+    dto = next((v for v in dtos if v.get("primaryTrainingDevice")), dtos[0] if dtos else None)
+    if not dto:
+        return
+    # The endpoint returns the latest value *as of* the requested date, so the
+    # DTO's own calendarDate is the day the balance was actually computed.
+    d = dto.get("calendarDate") or cal_date
+    if not d:
+        return
+    conn.execute(
+        """INSERT OR REPLACE INTO load_focus
+           (calendar_date, anaerobic, high_aerobic, low_aerobic, focus_status, raw_json)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            d,
+            dto.get("monthlyLoadAnaerobic"),
+            dto.get("monthlyLoadAerobicHigh"),
+            dto.get("monthlyLoadAerobicLow"),
+            dto.get("trainingBalanceFeedbackPhrase"),
+            json.dumps(dto),
+        ),
+    )
+
+
 def upsert_hill_score(conn: sqlite3.Connection, record: dict, cal_date: str = None) -> None:
     d = cal_date or record.get("calendarDate") or record.get("date")
     if not d:
@@ -3703,6 +3736,7 @@ _DAILY_SIGNAL_FIELDS = {
     "training_status_daily": ("latestTrainingStatusData",),
     "training_status_weekly": ("latestTrainingStatusData",),
     "training_status": ("latestTrainingStatusData",),
+    "training_load_balance": ("metricsTrainingLoadBalanceDTOMap",),
 }
 
 
@@ -4067,6 +4101,11 @@ def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str
         elif name == "hill_score":
             for rec in records:
                 upsert_hill_score(conn, rec, cal_date)
+                count += 1
+
+        elif name == "training_load_balance":
+            for rec in records:
+                upsert_load_focus(conn, rec, cal_date)
                 count += 1
 
         elif name == "race_predictions":
