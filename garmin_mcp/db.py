@@ -524,11 +524,26 @@ CREATE TABLE IF NOT EXISTS sleep_stats (
 );
 
 CREATE TABLE IF NOT EXISTS health_snapshot (
-    calendar_date           TEXT PRIMARY KEY,
+    snapshot_id             TEXT PRIMARY KEY,
+    calendar_date           TEXT,
     activity_name           TEXT,
     wellness_activity_type  TEXT,
     start_timestamp_local   TEXT,
     end_timestamp_local     TEXT,
+    hr_avg                  INTEGER,
+    hr_min                  INTEGER,
+    hr_max                  INTEGER,
+    respiration_avg         REAL,
+    respiration_min         REAL,
+    respiration_max         REAL,
+    stress_avg              INTEGER,
+    stress_min              INTEGER,
+    stress_max              INTEGER,
+    spo2_avg                INTEGER,
+    spo2_min                INTEGER,
+    spo2_max                INTEGER,
+    rmssd_hrv               REAL,
+    sdrr_hrv                REAL,
     raw_json                TEXT
 );
 
@@ -1488,6 +1503,77 @@ def migrate_hrv_timestamps_from_timeline(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def migrate_health_snapshot_schema(conn: sqlite3.Connection) -> None:
+    """Rebuild the pre-#85 health_snapshot table into the per-snapshot schema (#85 #5).
+
+    The old table used calendar_date as PRIMARY KEY (so a second snapshot on the
+    same day overwrote the first) and kept the summary only inside raw_json. The
+    new schema keys on snapshot_id and surfaces the HR/respiration/stress/SpO2/HRV
+    summary as columns. This re-derives both from each old row's raw_json, merged
+    with the old columns, and guarantees every row keeps an id (last resort:
+    calendar_date) so no row is ever silently dropped. Idempotent, and retriable
+    if a previous run was interrupted mid-rebuild.
+    """
+    # Recover from an interrupted earlier run: if the temp table survived, the
+    # rebuild did not finish — restore the original table and start over, so no
+    # rows are left orphaned.
+    leftover = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_health_snapshot_old'").fetchone()
+    if leftover:
+        conn.execute("DROP TABLE IF EXISTS health_snapshot")
+        conn.execute("ALTER TABLE _health_snapshot_old RENAME TO health_snapshot")
+
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(health_snapshot)")]
+    if not cols or "snapshot_id" in cols:
+        return  # table absent (fresh install builds the new schema) or already migrated
+
+    old = conn.execute(
+        """SELECT calendar_date, activity_name, wellness_activity_type,
+                  start_timestamp_local, end_timestamp_local, raw_json
+           FROM health_snapshot"""
+    ).fetchall()
+    conn.execute("ALTER TABLE health_snapshot RENAME TO _health_snapshot_old")
+    # Recreate health_snapshot (and no-op every other CREATE IF NOT EXISTS) with
+    # the new schema now that the old table is out of the way.
+    conn.executescript(_SCHEMA_SQL)
+
+    migrated = 0
+    for i, (cal, name, wtype, start, end, raw) in enumerate(old):
+        rec = None
+        if raw:
+            try:
+                rec = json.loads(raw)
+            except (TypeError, ValueError):
+                rec = None
+        if not isinstance(rec, dict):
+            rec = {}
+        # Merge the old columns so an id/field missing from raw_json is still
+        # recovered from the row itself.
+        rec.setdefault("calendarDate", cal)
+        rec.setdefault("activityName", name)
+        rec.setdefault("wellnessActivityType", wtype)
+        rec.setdefault("startTimestampLocal", start)
+        rec.setdefault("endTimestampLocal", end)
+        # Guarantee an id so a legacy row is never silently dropped: prefer the
+        # real identity, fall back to calendar_date, then a synthetic key.
+        if not health_snapshot_id(rec):
+            rec["startTimestampLocal"] = cal or f"legacy-snapshot-{i}"
+        before = conn.total_changes
+        upsert_health_snapshot(conn, rec)
+        migrated += conn.total_changes - before
+
+    conn.execute("DROP TABLE _health_snapshot_old")
+    if migrated != len(old):
+        log.warning(
+            "health_snapshot rebuild: %d of %d rows migrated (%d not re-inserted)",
+            migrated,
+            len(old),
+            len(old) - migrated,
+        )
+    else:
+        log.info("Rebuilt health_snapshot to per-snapshot schema (%d rows)", migrated)
+    conn.commit()
+
+
 def migrate_activity_table(conn: sqlite3.Connection) -> None:
     """Add new columns to activity table and backfill from raw_json.
 
@@ -1663,15 +1749,11 @@ def migrate_hollow_tables(conn: sqlite3.Connection) -> None:
                 "end_timestamp_local": "endTimestampLocal",
             },
         ),
-        (
-            "health_snapshot",
-            {
-                "activity_name": "activityName",
-                "wellness_activity_type": "wellnessActivityType",
-                "start_timestamp_local": "startTimestampLocal",
-                "end_timestamp_local": "endTimestampLocal",
-            },
-        ),
+        # health_snapshot is intentionally omitted: it is now keyed on
+        # snapshot_id (not calendar_date), so a `WHERE calendar_date = ?`
+        # backfill would cross-fill between two same-day snapshots. Its scalar
+        # columns are populated directly by upsert_health_snapshot / the rebuild
+        # migration, so the hollow backfill is no longer needed for it.
     ]:
         rows = conn.execute(f"SELECT calendar_date, raw_json FROM {table} WHERE raw_json IS NOT NULL").fetchall()
         for cal_date, raw in rows:
@@ -1742,6 +1824,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     cleanup_body_battery_error_rows(conn)
     migrate_spo2_max_backfill(conn)
     migrate_hrv_timestamps_from_timeline(conn)
+    migrate_health_snapshot_schema(conn)
 
     # Only run cleanup/backfill when there are rows that actually need it.
     needs_cleanup = conn.execute(
@@ -3679,23 +3762,93 @@ def upsert_sleep_stats(conn, record):
         _upsert_raw_only(conn, "sleep_stats", "calendar_date", record, d)
 
 
+def health_snapshot_id(record: dict) -> Optional[str]:
+    """Stable per-snapshot id: activityUuid.uuid, else the local start time.
+
+    Keying on this (rather than calendar_date) lets two snapshots on the same
+    day coexist instead of the second overwriting the first.
+    """
+    uuid = record.get("activityUuid")
+    if isinstance(uuid, dict) and uuid.get("uuid"):
+        return str(uuid["uuid"])
+    if isinstance(uuid, str) and uuid:
+        return uuid
+    return record.get("startTimestampLocal") or None
+
+
+_SNAPSHOT_SUMMARY_COLUMNS = {
+    "HEART_RATE": ("hr_avg", "hr_min", "hr_max"),
+    "RESPIRATION": ("respiration_avg", "respiration_min", "respiration_max"),
+    "STRESS": ("stress_avg", "stress_min", "stress_max"),
+    "SPO2": ("spo2_avg", "spo2_min", "spo2_max"),
+    "RMSSD_HRV": ("rmssd_hrv", None, None),
+    "SDRR_HRV": ("sdrr_hrv", None, None),
+}
+
+
+def _snapshot_summary(record: dict) -> dict:
+    """Flatten summaryTypeDataList into {column: value} for the snapshot columns."""
+    out = {}
+    for item in record.get("summaryTypeDataList") or []:
+        if not isinstance(item, dict):
+            continue
+        cols = _SNAPSHOT_SUMMARY_COLUMNS.get(item.get("summaryType"))
+        if not cols:
+            continue
+        avg_col, min_col, max_col = cols
+        if avg_col:
+            out[avg_col] = item.get("avgValue")
+        if min_col:
+            out[min_col] = item.get("minValue")
+        if max_col:
+            out[max_col] = item.get("maxValue")
+    return out
+
+
+_SNAPSHOT_COLUMNS = [
+    "snapshot_id",
+    "calendar_date",
+    "activity_name",
+    "wellness_activity_type",
+    "start_timestamp_local",
+    "end_timestamp_local",
+    "hr_avg",
+    "hr_min",
+    "hr_max",
+    "respiration_avg",
+    "respiration_min",
+    "respiration_max",
+    "stress_avg",
+    "stress_min",
+    "stress_max",
+    "spo2_avg",
+    "spo2_min",
+    "spo2_max",
+    "rmssd_hrv",
+    "sdrr_hrv",
+    "raw_json",
+]
+
+
 def upsert_health_snapshot(conn, record):
-    d = record.get("calendarDate") or record.get("date")
-    if not d:
+    sid = health_snapshot_id(record)
+    if not sid:
         return
+    summary = _snapshot_summary(record)
+    values = {
+        "snapshot_id": sid,
+        "calendar_date": record.get("calendarDate") or record.get("date"),
+        "activity_name": record.get("activityName"),
+        "wellness_activity_type": record.get("wellnessActivityType"),
+        "start_timestamp_local": record.get("startTimestampLocal"),
+        "end_timestamp_local": record.get("endTimestampLocal"),
+        "raw_json": json.dumps(record),
+        **summary,
+    }
+    cols = _SNAPSHOT_COLUMNS
     conn.execute(
-        """INSERT OR REPLACE INTO health_snapshot
-           (calendar_date, activity_name, wellness_activity_type,
-            start_timestamp_local, end_timestamp_local, raw_json)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (
-            d,
-            record.get("activityName"),
-            record.get("wellnessActivityType"),
-            record.get("startTimestampLocal"),
-            record.get("endTimestampLocal"),
-            json.dumps(record),
-        ),
+        f"INSERT OR REPLACE INTO health_snapshot ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+        tuple(values.get(c) for c in cols),
     )
 
 

@@ -2742,20 +2742,38 @@ def garmin_health_snapshot() -> str:
     try:
         rows = query(
             conn,
-            """SELECT calendar_date, activity_name, wellness_activity_type,
-                      start_timestamp_local, end_timestamp_local, raw_json
+            """SELECT snapshot_id, calendar_date, activity_name, wellness_activity_type,
+                      start_timestamp_local, end_timestamp_local,
+                      hr_avg, hr_min, hr_max,
+                      respiration_avg, respiration_min, respiration_max,
+                      stress_avg, stress_min, stress_max,
+                      spo2_avg, spo2_min, spo2_max,
+                      rmssd_hrv, sdrr_hrv, raw_json
                FROM health_snapshot
-               ORDER BY calendar_date DESC""",
+               ORDER BY start_timestamp_local DESC""",
         )
 
         parsed = []
         for r in rows:
             entry = {
+                "snapshot_id": r["snapshot_id"],
                 "date": r["calendar_date"],
                 "activity_name": r["activity_name"],
                 "wellness_activity_type": r["wellness_activity_type"],
                 "start": r["start_timestamp_local"],
                 "end": r["end_timestamp_local"],
+                "summary": {
+                    "heart_rate": {"avg": r["hr_avg"], "min": r["hr_min"], "max": r["hr_max"]},
+                    "respiration": {
+                        "avg": r["respiration_avg"],
+                        "min": r["respiration_min"],
+                        "max": r["respiration_max"],
+                    },
+                    "stress": {"avg": r["stress_avg"], "min": r["stress_min"], "max": r["stress_max"]},
+                    "spo2": {"avg": r["spo2_avg"], "min": r["spo2_min"], "max": r["spo2_max"]},
+                    "rmssd_hrv": r["rmssd_hrv"],
+                    "sdrr_hrv": r["sdrr_hrv"],
+                },
             }
             if r["raw_json"]:
                 try:
