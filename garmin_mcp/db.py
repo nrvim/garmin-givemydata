@@ -50,6 +50,57 @@ def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     return conn
 
 
+# Default size of the rolling window whose activity details are re-fetched every
+# sync, so edits made in Garmin Connect after an activity first synced (e.g. the
+# self-evaluation feel/RPE, which only appear in the details payload) are picked
+# up. See #85 finding 4. 0 disables the re-fetch.
+DEFAULT_REFETCH_RECENT_DAYS = 7
+
+
+def recent_activity_ids(conn: sqlite3.Connection, today: str, days: int) -> set:
+    """activity_ids whose start is within ``days`` of ``today``.
+
+    These are excluded from the "already has details, skip it" set so their
+    details are re-fetched each sync and late edits land. Returns an empty set
+    when days <= 0 (re-fetch disabled).
+    """
+    if not days or days <= 0:
+        return set()
+    from datetime import date, timedelta
+
+    try:
+        cutoff = (date.fromisoformat(today) - timedelta(days=days)).isoformat()
+    except (TypeError, ValueError):
+        return set()
+    rows = conn.execute(
+        "SELECT activity_id FROM activity WHERE start_time_local IS NOT NULL AND start_time_local >= ?",
+        (cutoff,),
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def widen_start_for_refetch(start: str, today: str, days: int) -> str:
+    """Widen an auto-computed fetch start to cover the re-fetch window.
+
+    Returns the earlier of ``start`` and ``today - days`` (both YYYY-MM-DD), so a
+    recently-edited activity appears in the fetched list and its details refresh
+    (#85 finding 4). Returns ``start`` unchanged when days <= 0 or dates are
+    unparseable. Callers pass this only on the auto/incremental path — an
+    explicit start date is respected by not calling it.
+    """
+    if not days or days <= 0:
+        return start
+    from datetime import date, timedelta
+
+    try:
+        window_start = (date.fromisoformat(today) - timedelta(days=days)).isoformat()
+    except (TypeError, ValueError):
+        return start
+    if not start:
+        return window_start
+    return min(start, window_start)
+
+
 # ---------------------------------------------------------------------------
 # Schema — 35 tables
 # ---------------------------------------------------------------------------

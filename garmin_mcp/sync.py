@@ -70,7 +70,11 @@ def _parse_trackpoints_for_activities(conn, activity_ids):
 
 
 def incremental_sync(
-    target_date: str = None, start_date: str = None, save_raw: bool = False, parse_trackpoints: bool = True
+    target_date: str = None,
+    start_date: str = None,
+    save_raw: bool = False,
+    parse_trackpoints: bool = True,
+    refetch_recent_days: int = None,
 ) -> dict:
     """Fetch today's data from Garmin and save directly to the database.
 
@@ -146,9 +150,24 @@ def incremental_sync(
 
     effective_start = start_date or _catch_up_start(conn, today)
 
+    # Re-fetch details for recently-started activities so edits made after the
+    # first sync (e.g. self-evaluation feel/RPE, only present in the details
+    # payload) are picked up. #85 finding 4.
+    from garmin_mcp.db import DEFAULT_REFETCH_RECENT_DAYS, recent_activity_ids, widen_start_for_refetch
+
+    if refetch_recent_days is None:
+        refetch_recent_days = DEFAULT_REFETCH_RECENT_DAYS
+    # On the auto (incremental/catch-up) path, widen the fetch start to cover the
+    # re-fetch window — otherwise a recent activity is dropped from the skip-set
+    # but never appears in the fetched activity list, so its late edits are still
+    # missed. An explicit start_date is respected as-is.
+    if start_date is None:
+        effective_start = widen_start_for_refetch(effective_start, today, refetch_recent_days)
+
     # Build set of already-fetched activity IDs so fetch_all() skips them
     existing = conn.execute("SELECT DISTINCT activity_id FROM activity_splits").fetchall()
     known_activity_ids = {row[0] for row in existing}
+    known_activity_ids -= recent_activity_ids(conn, today, refetch_recent_days)
     if known_activity_ids:
         logger.info("Skipping %d activities with existing details", len(known_activity_ids))
 
