@@ -183,6 +183,18 @@ CREATE TABLE IF NOT EXISTS spo2_hourly_average (
     PRIMARY KEY (calendar_date, hour_timestamp)
 );
 
+-- Per-second Health Snapshot graphs (#86), parsed from the wellness _ACTIVITY.fit.
+-- Keyed to the snapshot via health_snapshot.snapshot_id.
+CREATE TABLE IF NOT EXISTS health_snapshot_reading (
+    snapshot_id    TEXT NOT NULL,
+    reading_index  INTEGER NOT NULL,
+    heart_rate     INTEGER,
+    respiration    REAL,
+    stress         INTEGER,
+    spo2           INTEGER,
+    PRIMARY KEY (snapshot_id, reading_index)
+);
+
 CREATE TABLE IF NOT EXISTS respiration (
     calendar_date       TEXT PRIMARY KEY,
     avg_waking          REAL,
@@ -3850,6 +3862,25 @@ def upsert_health_snapshot(conn, record):
         f"INSERT OR REPLACE INTO health_snapshot ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
         tuple(values.get(c) for c in cols),
     )
+
+
+def upsert_health_snapshot_readings(conn, snapshot_id, readings) -> int:
+    """Store per-second Health Snapshot graph readings for one snapshot (#86).
+
+    ``readings`` is a list of (reading_index, heart_rate, respiration, stress,
+    spo2) tuples as produced by parse_health_snapshot_fit. Keyed on
+    (snapshot_id, reading_index) so re-ingesting the same snapshot replaces its
+    rows rather than duplicating. Returns the number of rows written.
+    """
+    if not snapshot_id or not readings:
+        return 0
+    conn.executemany(
+        """INSERT OR REPLACE INTO health_snapshot_reading
+           (snapshot_id, reading_index, heart_rate, respiration, stress, spo2)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        [(snapshot_id, idx, hr, resp, st, sp) for (idx, hr, resp, st, sp) in readings],
+    )
+    return len(readings)
 
 
 def upsert_workout_schedule(conn, record):
