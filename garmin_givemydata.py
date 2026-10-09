@@ -286,6 +286,171 @@ def _print_trackpoint_summary(summary: dict[str, int], prefix: str = "") -> None
     )
 
 
+def _parse_iso(s):
+    """Lenient ISO-8601 parse to a naive datetime, or None."""
+    from datetime import datetime
+
+    if not s:
+        return None
+    s = str(s).replace("Z", "")
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        try:
+            return datetime.fromisoformat(s.split(".")[0])
+        except ValueError:
+            return None
+
+
+def _assign_snapshots(members, candidates):
+    """Map each FIT member to at most one snapshot_id, one-to-one.
+
+    ``members`` is a list of (member_name, fit_start_datetime|None); ``candidates``
+    a list of (snapshot_id, gmt_datetime|None). Returns {member_name: snapshot_id}.
+
+    The common clean case (exactly one member and one snapshot that day) is paired
+    directly, time-agnostic (handles a missing GMT). Otherwise each member is
+    matched to the NEAREST still-unused snapshot within 5 minutes; a member with
+    no start time or no match in range is left unassigned rather than force-matched
+    (which would otherwise clobber another member's readings under INSERT OR REPLACE).
+    """
+    live = [(sid, gmt) for sid, gmt in candidates if sid]
+    if not live or not members:
+        return {}
+    if len(members) == 1 and len(live) == 1:
+        return {members[0][0]: live[0][0]}
+
+    assigned = {}
+    used = set()
+    # Deterministic: match members with a known start first, nearest pair wins.
+    pairs = []
+    for mname, mstart in members:
+        if mstart is None:
+            continue
+        for sid, gmt in live:
+            if gmt is None:
+                continue
+            pairs.append((abs((gmt - mstart).total_seconds()), mname, sid))
+    pairs.sort()
+    for delta, mname, sid in pairs:
+        if delta > 300 or mname in assigned or sid in used:
+            continue
+        assigned[mname] = sid
+        used.add(sid)
+    return assigned
+
+
+def _ingest_health_snapshot_graphs(client, conn, start_date: str, end_date: str) -> None:
+    """Download the wellness ZIP for each date with a Health Snapshot in range,
+    parse the per-second _ACTIVITY.fit graphs, and store them keyed to the
+    matching snapshot. Self-checks the parsed aggregates against the stored
+    summary and warns on a mismatch (a guard against field-mapping drift on a
+    different watch/firmware). See #86."""
+    import io
+    import json as _json
+    import zipfile
+
+    from garmin_mcp.db import upsert_health_snapshot_readings
+    from garmin_mcp.parse_activity_files import parse_health_snapshot_fit, snapshot_reading_summary
+
+    dates = [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT calendar_date FROM health_snapshot "
+            "WHERE calendar_date IS NOT NULL AND calendar_date BETWEEN ? AND ? ORDER BY calendar_date",
+            (start_date, end_date),
+        ).fetchall()
+    ]
+    if not dates:
+        return
+
+    total_snaps = 0
+    total_rows = 0
+    for d in dates:
+        try:
+            blob = client.download_file(f"/gc-api/download-service/files/wellness/{d}")
+        except Exception:
+            blob = None
+        if not blob:
+            continue
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(blob))
+        except Exception:
+            continue
+        members = [n for n in zf.namelist() if n.upper().endswith("_ACTIVITY.FIT")]
+        if not members:
+            continue
+
+        candidates = []
+        for sid, raw in conn.execute(
+            "SELECT snapshot_id, raw_json FROM health_snapshot WHERE calendar_date = ?", (d,)
+        ).fetchall():
+            gmt = None
+            if raw:
+                try:
+                    gmt = _parse_iso(_json.loads(raw).get("startTimestampGMT"))
+                except Exception:
+                    gmt = None
+            candidates.append((sid, gmt))
+
+        # Parse every member first, then assign one-to-one so two FITs can never
+        # be force-matched onto the same snapshot (which INSERT OR REPLACE would
+        # clobber). A real parse failure is swallowed to keep the sync resilient.
+        parsed_members = {}
+        for name in members:
+            try:
+                parsed = parse_health_snapshot_fit(zf.read(name))
+            except Exception:
+                continue
+            if parsed["readings"]:
+                parsed_members[name] = parsed
+
+        assignment = _assign_snapshots(
+            [(name, _parse_iso(p["start_time"])) for name, p in parsed_members.items()],
+            candidates,
+        )
+        for name, sid in assignment.items():
+            readings = parsed_members[name]["readings"]
+            total_rows += upsert_health_snapshot_readings(conn, sid, readings)
+            conn.commit()
+            total_snaps += 1
+            _snapshot_graph_selfcheck(conn, sid, snapshot_reading_summary(readings))
+
+    if total_snaps:
+        print(f"  Health Snapshot graphs: {total_snaps} snapshot(s), {total_rows} per-second readings")
+
+
+def _snapshot_graph_selfcheck(conn, snapshot_id: str, parsed_summary: dict) -> None:
+    """Warn if the parsed per-second aggregates diverge from the snapshot's
+    stored summary — the signal that the inferred FIT field mapping may not hold
+    for this watch/firmware."""
+    row = conn.execute(
+        "SELECT hr_min, hr_max, respiration_min, respiration_max, "
+        "stress_min, stress_max, spo2_min, spo2_max FROM health_snapshot WHERE snapshot_id = ?",
+        (snapshot_id,),
+    ).fetchone()
+    if not row:
+        return
+    stored = {
+        "heart_rate": (row[0], row[1]),
+        "respiration": (row[2], row[3]),
+        "stress": (row[4], row[5]),
+        "spo2": (row[6], row[7]),
+    }
+    for metric, (smin, smax) in stored.items():
+        got = parsed_summary.get(metric)
+        if got is None or smin is None or smax is None:
+            continue
+        # Allow 1 unit of slack for rounding differences between the per-second
+        # values and Garmin's summary. Values themselves are not logged (health
+        # data); only the metric name is, so a real mapping drift is still visible.
+        if abs(got["min"] - smin) > 1 or abs(got["max"] - smax) > 1:
+            print(
+                f"  WARNING: snapshot {snapshot_id} {metric} graph range does not match the "
+                f"stored summary — the inferred FIT field mapping may not fit this device."
+            )
+
+
 def _log_sync(conn, sync_type, count):
     from datetime import datetime, timezone
 
@@ -733,6 +898,15 @@ examples:
                 summary = _backfill_unparsed_fit(conn, fit_dir)
                 if summary["targeted"]:
                     _print_trackpoint_summary(summary, prefix="  ")
+
+        # Health Snapshot per-second graphs (#86): pull the wellness FIT for any
+        # snapshot in the fetched range. Not activity-profile specific, and
+        # skipped with --no-files like the other downloads.
+        if not args.no_files:
+            try:
+                _ingest_health_snapshot_graphs(client, conn, start, end)
+            except Exception as e:
+                print(f"  (health snapshot graphs skipped: {e})")
 
     finally:
         client.close()

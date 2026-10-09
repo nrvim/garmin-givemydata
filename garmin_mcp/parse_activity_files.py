@@ -92,6 +92,74 @@ def _track_rows_from_fit_bytes(fit_blob: bytes) -> List[Tuple]:
     return rows
 
 
+# ── Health Snapshot per-second graphs (#86) ──────────────────────────────────
+# The 2-minute Health Snapshot's per-second HR/respiration/stress/SpO2 curves
+# live only inside the _ACTIVITY.fit of the daily wellness download, as
+# undecoded record fields. These numbers are inferred (no published FIT
+# profile) and were confirmed against the stored summaryTypeDataList: on a real
+# snapshot, unknown_108/100, unknown_116/100 and unknown_133 reproduced the
+# summary's respiration/stress/SpO2 (min/max exact, respiration avg to 2 dp).
+_SNAPSHOT_RESPIRATION_FIELD = "unknown_108"  # respiration x100
+_SNAPSHOT_STRESS_FIELD = "unknown_116"  # stress x100
+_SNAPSHOT_SPO2_FIELD = "unknown_133"  # SpO2
+
+
+def parse_health_snapshot_fit(fit_blob: bytes) -> dict:
+    """Parse one Health Snapshot ``_ACTIVITY.fit`` into per-second readings.
+
+    Returns ``{"start_time": <iso str|None>, "readings": [(reading_index,
+    heart_rate, respiration, stress, spo2), ...]}``. respiration/stress are the
+    x100 fields divided down; all values are None when absent. See the module
+    note above for the field-mapping provenance.
+    """
+
+    def _num(x):
+        return x if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+
+    fit = FitFile(io.BytesIO(fit_blob))
+    samples = []  # (timestamp, hr, respiration, stress, spo2)
+    for msg in fit.get_messages("record"):
+        v = {f.name: f.value for f in msg}
+        ts = v.get("timestamp")
+        if ts is None:
+            continue
+        resp = _num(v.get(_SNAPSHOT_RESPIRATION_FIELD))
+        stress = _num(v.get(_SNAPSHOT_STRESS_FIELD))
+        samples.append(
+            (
+                ts,
+                _num(v.get("heart_rate")),
+                round(resp / 100, 2) if resp is not None else None,
+                round(stress / 100) if stress is not None else None,
+                _num(v.get(_SNAPSHOT_SPO2_FIELD)),
+            )
+        )
+    # FIT does not guarantee record ordering; sort by timestamp so reading_index
+    # is chronological and start_time is the earliest sample.
+    samples.sort(key=lambda s: s[0])
+    readings = [(i, hr, resp, stress, spo2) for i, (_ts, hr, resp, stress, spo2) in enumerate(samples)]
+    start = samples[0][0] if samples else None
+    return {"start_time": start.isoformat() if start is not None else None, "readings": readings}
+
+
+def snapshot_reading_summary(readings: List[Tuple]) -> dict:
+    """Aggregate per-second readings into avg/min/max per metric, for a self-check
+    against the snapshot's stored summary. Column order: (index, hr, resp, stress, spo2)."""
+
+    def agg(vals):
+        vals = [x for x in vals if x is not None]
+        if not vals:
+            return None
+        return {"avg": round(sum(vals) / len(vals), 2), "min": min(vals), "max": max(vals)}
+
+    return {
+        "heart_rate": agg([r[1] for r in readings]),
+        "respiration": agg([r[2] for r in readings]),
+        "stress": agg([r[3] for r in readings]),
+        "spo2": agg([r[4] for r in readings]),
+    }
+
+
 def parse_trackpoints_from_fit_archive(
     fit_archive_path: Path,
 ) -> Tuple[Optional[int], List[Tuple]]:
