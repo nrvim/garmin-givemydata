@@ -3,10 +3,12 @@ Tests for activity table fields: direct_workout_feel, direct_workout_rpe,
 and exercise_name/exercise_category extraction in activity_exercise_sets.
 """
 
+import json
 import sqlite3
 
 from garmin_mcp.db import (
     migrate_activity_table,
+    migrate_exercise_set_names,
     query,
     upsert_activity,
     upsert_activity_exercise_sets,
@@ -235,3 +237,54 @@ class TestMigrateActivityTable:
         cols = {row[1] for row in cursor.fetchall()}
         assert "direct_workout_feel" in cols
         assert "direct_workout_rpe" in cols
+
+
+class TestExerciseSetNameBackfill:
+    """Sets stored before #48 have NULL exercise_name/category even though
+    raw_json holds the nested 'exercises' candidates; the migration repairs them."""
+
+    def _insert_legacy(self, conn, set_number, raw):
+        conn.execute(
+            """INSERT INTO activity_exercise_sets (activity_id, set_number, reps, raw_json)
+               VALUES (?, ?, ?, ?)""",
+            (77001, set_number, raw.get("repetitionCount"), json.dumps(raw)),
+        )
+
+    def _names(self, conn):
+        return conn.execute(
+            """SELECT set_number, exercise_name, exercise_category FROM activity_exercise_sets
+               WHERE activity_id = 77001 ORDER BY set_number"""
+        ).fetchall()
+
+    def test_backfills_most_likely_exercise(self, temp_db):
+        self._insert_legacy(
+            temp_db,
+            1,
+            {
+                "setType": "ACTIVE",
+                "repetitionCount": 10,
+                "exercises": [
+                    {"category": "UNKNOWN", "name": None, "probability": 14.8},
+                    {"category": "SQUAT", "name": "WEIGHTED_SQUAT", "probability": 84.4},
+                ],
+            },
+        )
+        self._insert_legacy(temp_db, 2, {"setType": "REST", "exercises": []})
+
+        migrate_exercise_set_names(temp_db)
+
+        rows = [tuple(r) for r in self._names(temp_db)]
+        assert rows == [(1, "WEIGHTED_SQUAT", "SQUAT"), (2, None, None)]
+
+    def test_is_idempotent_and_keeps_existing_names(self, temp_db):
+        self._insert_legacy(
+            temp_db, 1, {"setType": "ACTIVE", "exercises": [{"category": "CURL", "name": None, "probability": 99}]}
+        )
+        temp_db.execute(
+            "UPDATE activity_exercise_sets SET exercise_category = 'ROW' WHERE activity_id = 77001 AND set_number = 1"
+        )
+
+        migrate_exercise_set_names(temp_db)
+        migrate_exercise_set_names(temp_db)
+
+        assert [tuple(r) for r in self._names(temp_db)] == [(1, None, "ROW")]
