@@ -2,13 +2,28 @@
 Pytest configuration and shared fixtures for garmin-givemydata tests.
 """
 
-import sqlite3
+import atexit
+import os
+import shutil
 import tempfile
-from pathlib import Path
 
-import pytest
+# Isolate the test run from any real garmin.db (#85). garmin_mcp.db resolves
+# DB_PATH at import time (GARMIN_DATA_DIR first, then a garmin.db/.env/
+# garmin_givemydata.py in the CWD), and garmin_mcp.server opens that DB and runs
+# init_db() at import. Collecting the server tests from inside a real install
+# directory would otherwise open the user's real database and run the startup
+# migrations on it. Force a throwaway temp dir before importing garmin_mcp, and
+# clean it up when the interpreter exits.
+_TEST_DATA_DIR = tempfile.mkdtemp(prefix="garmin-givemydata-test-")
+os.environ["GARMIN_DATA_DIR"] = _TEST_DATA_DIR
+atexit.register(lambda: shutil.rmtree(_TEST_DATA_DIR, ignore_errors=True))
 
-from garmin_mcp.db import init_db
+import sqlite3  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import pytest  # noqa: E402
+
+from garmin_mcp.db import init_db  # noqa: E402
 
 
 @pytest.fixture
