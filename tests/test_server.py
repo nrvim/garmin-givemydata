@@ -137,5 +137,61 @@ class TestBackgroundSync(unittest.TestCase):
         self.assertFalse(server._sync_lock.locked())
 
 
+class TestGarminSyncWait(unittest.TestCase):
+    """garmin_sync used to return "started" immediately with pre-sync data,
+    so clients read it as "nothing new synced". It now waits (bounded) for
+    the bg sync and says clearly whether the data is updated yet.
+    """
+
+    def setUp(self):
+        TestBackgroundSync._wait_for_idle()
+        server._sync_state.update(running=False, started_at=None, finished_at=None, last_result=None)
+        server._sync_done.set()
+        freshness = patch("garmin_mcp.server._get_data_freshness", return_value={"is_stale": False})
+        freshness.start()
+        self.addCleanup(freshness.stop)
+
+    def tearDown(self):
+        TestBackgroundSync._wait_for_idle()
+
+    def _run(self, sync_secs, wait_secs, refresh=True):
+        import json
+
+        def slow_sync():
+            time.sleep(sync_secs)
+            return {"status": "ok", "total_upserted": 7}
+
+        with (
+            patch("garmin_mcp.sync.incremental_sync", slow_sync),
+            patch.object(server, "SYNC_WAIT_SEC", wait_secs),
+        ):
+            return json.loads(server.garmin_sync(refresh=refresh))
+
+    def test_waits_for_a_fast_sync_and_reports_the_result(self):
+        result = self._run(sync_secs=0.2, wait_secs=5)
+        self.assertFalse(result["sync_state"]["running"])
+        self.assertEqual(result["sync_state"]["last_result"]["total_upserted"], 7)
+        self.assertIn("up to date", result["message"])
+
+    def test_slow_sync_returns_running_with_explicit_message(self):
+        start = time.monotonic()
+        result = self._run(sync_secs=1.0, wait_secs=0.2)
+        self.assertLess(time.monotonic() - start, 0.9)
+        self.assertTrue(result["sync_state"]["running"])
+        self.assertIn("BEFORE this sync", result["message"])
+
+    def test_refresh_false_waits_for_running_sync(self):
+        self._run(sync_secs=0.5, wait_secs=0.05)
+        result = self._run(sync_secs=0, wait_secs=5, refresh=False)
+        self.assertFalse(result["sync_state"]["running"])
+        self.assertIn("up to date", result["message"])
+
+    def test_refresh_false_when_idle_returns_immediately(self):
+        start = time.monotonic()
+        result = self._run(sync_secs=0, wait_secs=5, refresh=False)
+        self.assertLess(time.monotonic() - start, 0.5)
+        self.assertNotIn("message", result)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -570,6 +570,14 @@ _sync_state: dict = {
 # future garmin_sync(refresh=True) would return "in_progress".
 SYNC_TIMEOUT_SEC = 600
 
+# How long a garmin_sync call blocks waiting for the bg sync to finish before
+# returning "running". Kept under the ~60s MCP client timeout. Without the
+# wait, clients query right after "started", see pre-sync data, and conclude
+# nothing new was synced.
+SYNC_WAIT_SEC = 45
+_sync_done = threading.Event()
+_sync_done.set()
+
 
 def _start_background_sync() -> dict:
     """Start the browser-based sync in a daemon thread; return immediately.
@@ -591,6 +599,7 @@ def _start_background_sync() -> dict:
 
     started_at = datetime.now(timezone.utc).isoformat()
     _sync_state.update(running=True, started_at=started_at, finished_at=None, last_result=None)
+    _sync_done.clear()
 
     def _bg():
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -620,6 +629,7 @@ def _start_background_sync() -> dict:
                 finished_at=datetime.now(timezone.utc).isoformat(),
             )
             _sync_lock.release()
+            _sync_done.set()
 
     try:
         threading.Thread(target=_bg, daemon=True, name="garmin-sync").start()
@@ -629,6 +639,7 @@ def _start_background_sync() -> dict:
         # for a sync that will never run.
         _sync_state.update(running=False)
         _sync_lock.release()
+        _sync_done.set()
         log.exception("failed to start garmin-sync thread")
         return {
             "status": "error",
@@ -702,28 +713,45 @@ def _get_data_freshness() -> dict:
 def garmin_sync(refresh: bool = True) -> str:
     """Sync the latest data from Garmin Connect.
 
-    The sync runs in the background (~2 minutes). The first call returns
-    immediately with status "started"; follow up with garmin_sync(refresh=False)
-    after ~2 minutes to see the final result. This avoids MCP client timeouts
-    (Claude Desktop ~60s) that previously made synchronous sync unusable.
+    A sync takes ~2 minutes and runs in the background. Each call waits up
+    to ~45s for it to finish (staying under MCP client timeouts), then
+    returns. Check "sync_state.running" in the result:
 
-    Set refresh=False to just check the current state and last sync result
-    without triggering a new sync.
+    - false: the sync finished; "sync_state.last_result" has the outcome and
+      the data is current, so query it now.
+    - true: the sync is STILL RUNNING and the data has not been updated yet.
+      Do not conclude that nothing new was synced. Call
+      garmin_sync(refresh=False) again; it waits for the running sync.
+
+    Set refresh=False to check on (and wait for) a running sync, or just
+    report the current state, without triggering a new sync.
 
     Use this when:
     - You just finished a run/ride and want to see the new data
     - You want to make sure today's health data is loaded
     - The data looks outdated
     """
+    started = _start_background_sync() if refresh else None
+    _sync_done.wait(timeout=SYNC_WAIT_SEC)
+
     status = _get_data_freshness()
     status["sync_state"] = dict(_sync_state)
+    if started is not None:
+        status["sync"] = started
 
-    if not refresh:
-        if status["is_stale"] and not _sync_state["running"]:
-            status["hint"] = "Data is not current. Call garmin_sync() to refresh."
-        return json.dumps(status, separators=(",", ":"), default=str)
-
-    status["sync"] = _start_background_sync()
+    if _sync_state["running"]:
+        status["message"] = (
+            "Sync is still running; the data above is from BEFORE this sync and "
+            "has not been updated yet. Call garmin_sync(refresh=False) to keep "
+            "waiting before reading any data."
+        )
+    elif _sync_state["finished_at"]:
+        if (_sync_state["last_result"] or {}).get("status") == "ok":
+            status["message"] = "Sync finished. The data is up to date; query it now."
+        else:
+            status["message"] = "Sync failed; see sync_state.last_result."
+    if not refresh and status["is_stale"] and not _sync_state["running"]:
+        status["hint"] = "Data is not current. Call garmin_sync() to refresh."
     return json.dumps(status, separators=(",", ":"), default=str)
 
 
