@@ -3,6 +3,13 @@ Garmin Connect API endpoint definitions.
 """
 
 
+def workouts_search_url(start: int = 0, limit: int = 100) -> str:
+    """Build the workout-library URL for one page. Pagination is handled in
+    client.py fetch_all() — a single limit=100 call silently dropped every
+    workout past the hundredth for anyone with a larger library (#review)."""
+    return f"/gc-api/workout-service/workouts?start={start}&limit={limit}"
+
+
 def profile_endpoints() -> dict:
     """Endpoints that don't need a date."""
     return {
@@ -24,7 +31,7 @@ def profile_endpoints() -> dict:
         "weight_first": "/gc-api/weight-service/weight/first",
         "daily_summaries_count": "/gc-api/usersummary-service/usersummary/dailySummariesCount",
         "earned_badges": "/gc-api/badge-service/badge/earned",
-        "workouts": "/gc-api/workout-service/workouts?start=0&limit=100",
+        "workouts": workouts_search_url(start=0, limit=100),
     }
 
 
