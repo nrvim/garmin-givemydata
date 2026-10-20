@@ -400,41 +400,89 @@ class TestFloorsTotals:
 
 
 class TestHealthStatusKey:
-    """health_status records carry a status key; the code read overallStatus,
-    which never exists — 0 of 4,218 rows filled on a real DB. Old GraphQL
-    error envelopes were also stored as rows."""
+    """health_status returns a `metrics` list of {type, status, value}; a
+    calendar_date PK let the last metric overwrite all the others, so only one
+    type survived per day. Keyed on (calendar_date, type), every metric is kept.
+    Old GraphQL error envelopes are still never stored."""
 
-    def _row(self, conn, day):
-        r = conn.execute("SELECT * FROM health_status WHERE calendar_date = ?", (day,)).fetchone()
-        return dict(r) if r else None
+    def _rows(self, conn, day):
+        return [dict(r) for r in conn.execute("SELECT * FROM health_status WHERE calendar_date = ?", (day,))]
 
-    def test_status_key_captured(self, temp_db):
+    def test_status_and_value_captured(self, temp_db):
         upsert_health_status(
             temp_db, {"status": "IN_RANGE", "type": "SKIN_TEMP_F", "value": 0.5}, cal_date="2026-09-10"
         )
-        assert self._row(temp_db, "2026-09-10")["overall_status"] == "IN_RANGE"
+        rows = self._rows(temp_db, "2026-09-10")
+        assert len(rows) == 1
+        assert rows[0]["type"] == "SKIN_TEMP_F"
+        assert rows[0]["status"] == "IN_RANGE"
+        assert rows[0]["value"] == 0.5
+
+    def test_each_metric_type_is_kept(self, temp_db):
+        """Regression: a second metric on the same day must not overwrite the first."""
+        for m in (
+            {"type": "SKIN_TEMP_F", "status": "IN_RANGE", "value": 0.7},
+            {"type": "HRV_STATUS", "status": "BALANCED", "value": 50},
+            {"type": "SKIN_TEMP_C", "status": "IN_RANGE", "value": 0.4},
+        ):
+            upsert_health_status(temp_db, m, cal_date="2026-09-10")
+        rows = self._rows(temp_db, "2026-09-10")
+        assert {r["type"] for r in rows} == {"SKIN_TEMP_F", "HRV_STATUS", "SKIN_TEMP_C"}
+
+    def test_metrics_wrapper_is_unwrapped(self, temp_db):
+        n = upsert_health_status(
+            temp_db,
+            {
+                "metrics": [
+                    {"type": "SKIN_TEMP_F", "status": "IN_RANGE", "value": 1.1},
+                    {"type": "HRV_STATUS", "status": "UNBALANCED", "value": 42},
+                ]
+            },
+            cal_date="2026-09-13",
+        )
+        assert n == 2
+        assert len(self._rows(temp_db, "2026-09-13")) == 2
 
     def test_error_envelope_not_stored(self, temp_db):
-        upsert_health_status(
+        n = upsert_health_status(
             temp_db,
             {"message": "INTERNAL_ERROR", "extensions": {"classification": "INTERNAL_ERROR"}, "locations": []},
             cal_date="2026-09-11",
         )
-        assert self._row(temp_db, "2026-09-11") is None
+        assert n == 0
+        assert self._rows(temp_db, "2026-09-11") == []
 
-    def test_migration_backfills_and_cleans(self, temp_db):
+    def test_migration_rebuilds_old_schema(self, temp_db):
+        # Simulate the pre-review table: calendar_date PK, overall_status, a
+        # single metric per row in raw_json, plus a stored error envelope.
+        temp_db.execute("DROP TABLE health_status")
         temp_db.execute(
-            "INSERT INTO health_status (calendar_date, raw_json) VALUES (?, ?)",
-            ("2026-09-12", json.dumps({"status": "OUT_OF_RANGE", "type": "HRV_STATUS"})),
+            "CREATE TABLE health_status (calendar_date TEXT PRIMARY KEY, overall_status TEXT, raw_json TEXT)"
         )
         temp_db.execute(
-            "INSERT INTO health_status (calendar_date, raw_json) VALUES (?, ?)",
-            ("2016-01-01", json.dumps({"message": "err", "extensions": {}, "locations": []})),
+            "INSERT INTO health_status (calendar_date, overall_status, raw_json) VALUES (?, ?, ?)",
+            ("2026-09-12", "OUT_OF_RANGE", json.dumps({"status": "OUT_OF_RANGE", "type": "HRV_STATUS", "value": 70})),
+        )
+        temp_db.execute(
+            "INSERT INTO health_status (calendar_date, overall_status, raw_json) VALUES (?, ?, ?)",
+            ("2016-01-01", None, json.dumps({"message": "err", "extensions": {}, "locations": []})),
         )
         temp_db.commit()
         migrate_health_status(temp_db)
-        assert self._row(temp_db, "2026-09-12")["overall_status"] == "OUT_OF_RANGE"
-        assert self._row(temp_db, "2016-01-01") is None
+        cols = {r[1] for r in temp_db.execute("PRAGMA table_info(health_status)")}
+        assert "type" in cols and "value" in cols
+        rows = self._rows(temp_db, "2026-09-12")
+        assert len(rows) == 1
+        assert rows[0]["type"] == "HRV_STATUS"
+        assert rows[0]["status"] == "OUT_OF_RANGE"
+        assert self._rows(temp_db, "2016-01-01") == []
+
+    def test_migration_is_idempotent_on_new_schema(self, temp_db):
+        upsert_health_status(
+            temp_db, {"type": "SKIN_TEMP_F", "status": "IN_RANGE", "value": 0.5}, cal_date="2026-09-10"
+        )
+        migrate_health_status(temp_db)  # new schema already — must be a no-op
+        assert len(self._rows(temp_db, "2026-09-10")) == 1
 
 
 class TestCaloriesConsumed:

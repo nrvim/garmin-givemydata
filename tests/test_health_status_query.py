@@ -50,6 +50,25 @@ class TestHealthStatusStorage:
         assert row[0] == "2026-06-01"
         assert "HRV" in row[1]
 
+    def test_every_metric_type_is_stored(self, temp_db):
+        # The pre-fix failure mode: the last metric in the list (SKIN_TEMP_F)
+        # overwrote all the others under a calendar_date PK, so only one type
+        # survived per day. Each type must now land its own row.
+        resp = {
+            "data": {
+                "healthStatusSummary": {
+                    "metrics": [
+                        {"type": "HRV_STATUS", "status": "BALANCED", "value": 55},
+                        {"type": "SKIN_TEMP_C", "status": "IN_RANGE", "value": 0.4},
+                        {"type": "SKIN_TEMP_F", "status": "IN_RANGE", "value": 0.7},
+                    ]
+                }
+            }
+        }
+        assert save_to_db(temp_db, "gql_health_status", resp, cal_date="2026-06-02") == 3
+        types = {r[0] for r in temp_db.execute("SELECT type FROM health_status WHERE calendar_date = '2026-06-02'")}
+        assert types == {"HRV_STATUS", "SKIN_TEMP_C", "SKIN_TEMP_F"}
+
     def test_validation_error_response_writes_no_row(self, temp_db):
         # The pre-fix failure mode: a FieldUndefined validation error (no data
         # key) must not be stored.
