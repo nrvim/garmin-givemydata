@@ -170,3 +170,69 @@ def test_unknown_table_reports_available_ones(temp_db_file):
     assert result["unknown"] == ["nope"]
     assert "sleep" in result["available"]
     assert "columns" not in json.dumps(result)
+
+
+# --- multi-row sampling + notable raw_json fields (#review) ------------------
+
+
+def _insert_activity(db_path, activity_id, activity_type, payload):
+    conn = _open_conn(db_path)
+    conn.execute(
+        "INSERT INTO activity (activity_id, activity_type, raw_json) VALUES (?, ?, ?)",
+        (activity_id, activity_type, json.dumps(payload)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_multi_row_sampling_surfaces_a_sparse_feed(temp_db_file):
+    """An intraday feed carried by only one of several rows must still surface —
+    the old single-row read missed any field a given day didn't record."""
+    for cal in ("2026-04-10", "2026-04-11", "2026-04-12"):
+        _insert_raw_json(temp_db_file, "stress", {"avgStressLevel": 20}, cal_date=cal)
+    _insert_raw_json(
+        temp_db_file, "stress", {"stressValuesArray": _samples([1785874500000, 23])}, cal_date="2026-04-13"
+    )
+
+    result = _call(temp_db_file, "stress")
+
+    assert result["tables"]["stress"]["raw_json"]["$.stressValuesArray"] == "[epoch_ms, stress]"
+
+
+def test_notable_fields_surface_for_activity(temp_db_file):
+    _insert_activity(
+        temp_db_file, 1, "cycling", {"summaryDTO": {"beginPotentialStamina": 100, "functionalThresholdPower": 200}}
+    )
+
+    fields = _call(temp_db_file, "activity")["tables"]["activity"]["fields"]
+
+    assert "$.summaryDTO.beginPotentialStamina" in fields
+    assert "$.summaryDTO.functionalThresholdPower" in fields
+
+
+def test_notable_fields_absent_when_not_in_the_data(temp_db_file):
+    _insert_activity(temp_db_file, 2, "running", {"summaryDTO": {"averageHR": 150}})
+
+    table = _call(temp_db_file, "activity")["tables"]["activity"]
+
+    assert "fields" not in table
+
+
+def test_notable_fields_merge_across_activity_types(temp_db_file):
+    """Sampling spans activity types: a field only cycling carries and one only
+    swimming carries both surface."""
+    _insert_activity(temp_db_file, 3, "cycling", {"summaryDTO": {"functionalThresholdPower": 210}})
+    _insert_activity(temp_db_file, 4, "open_water_swimming", {"summaryDTO": {"beginPotentialStamina": 95}})
+
+    fields = _call(temp_db_file, "activity")["tables"]["activity"]["fields"]
+
+    assert "$.summaryDTO.functionalThresholdPower" in fields
+    assert "$.summaryDTO.beginPotentialStamina" in fields
+
+
+def test_notable_catalog_tables_still_exist(temp_db_file):
+    """A label pinned to a renamed or dropped table would silently never show."""
+    index = _call(temp_db_file)
+    known = set(index["tables"]) | set(index["empty_tables"])
+
+    assert set(server._RAW_JSON_NOTABLE) <= known

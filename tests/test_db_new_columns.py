@@ -30,6 +30,8 @@ from garmin_mcp.db import (
     init_db,
     migrate_activity_splits_v2,
     migrate_activity_table,
+    migrate_activity_table_v2,
+    migrate_daily_summary_v2,
     migrate_endurance_score_table,
     migrate_fitness_age_table,
     migrate_gear_table,
@@ -39,11 +41,14 @@ from garmin_mcp.db import (
     migrate_hollow_tables,
     migrate_sleep_table,
     migrate_sleep_table_v2,
+    migrate_sleep_table_v3,
     migrate_spo2_table,
     migrate_weight_table_v3,
+    save_to_db,
     upsert_activity,
     upsert_activity_splits,
     upsert_daily_events,
+    upsert_daily_summary,
     upsert_endurance_score,
     upsert_gear,
     upsert_health_snapshot,
@@ -1781,3 +1786,266 @@ class TestHollowTableArrayRawJson:
         # Schema columns added regardless
         assert "activity_type" in _cols(conn, "daily_events")
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Promoted raw_json fields (31-agent review): activity stamina/FTP/power,
+# daily_summary stress/altitude/HR-alerts, sleep HRV/breathing/HR.
+# ---------------------------------------------------------------------------
+
+
+class TestActivityStaminaPowerColumns:
+    """activity: beginPotentialStamina/endPotentialStamina/minAvailableStamina,
+    functionalThresholdPower, recoveryHeartRate, maxPowerTwentyMinutes."""
+
+    _COLS = (
+        "begin_potential_stamina",
+        "end_potential_stamina",
+        "min_available_stamina",
+        "functional_threshold_power",
+        "recovery_heart_rate",
+        "max_power_twenty_minutes",
+    )
+
+    def test_schema_has_columns(self, temp_db):
+        cols = _cols(temp_db, "activity")
+        for c in self._COLS:
+            assert c in cols, f"Missing: {c}"
+
+    def test_upsert_from_summary_dto(self, temp_db):
+        # Details records nest these under summaryDTO.
+        upsert_activity(
+            temp_db,
+            {
+                "activityId": 7001,
+                "activityType": {"typeKey": "cycling", "typeId": 2, "parentTypeId": 2},
+                "summaryDTO": {
+                    "beginPotentialStamina": 100,
+                    "endPotentialStamina": 12,
+                    "minAvailableStamina": 8,
+                    "functionalThresholdPower": 202,
+                    "recoveryHeartRate": 34,
+                    "maxPowerTwentyMinutes": 169.1,
+                },
+            },
+        )
+        row = _row(temp_db, "activity", "activity_id", 7001)
+        assert row["begin_potential_stamina"] == 100
+        assert row["end_potential_stamina"] == 12
+        assert row["min_available_stamina"] == 8
+        assert row["functional_threshold_power"] == 202
+        assert row["recovery_heart_rate"] == 34
+        assert row["max_power_twenty_minutes"] == pytest.approx(169.1)
+
+    def test_upsert_from_flat_list_shape(self, temp_db):
+        # List records carry the same fields at the top level.
+        upsert_activity(
+            temp_db,
+            {"activityId": 7002, "beginPotentialStamina": 90, "functionalThresholdPower": 180},
+        )
+        row = _row(temp_db, "activity", "activity_id", 7002)
+        assert row["begin_potential_stamina"] == 90
+        assert row["functional_threshold_power"] == 180
+
+    def test_migration_adds_and_backfills(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript("CREATE TABLE activity (activity_id INTEGER PRIMARY KEY, raw_json TEXT);")
+        conn.execute(
+            "INSERT INTO activity (activity_id, raw_json) VALUES (?, ?)",
+            (9100, json.dumps({"summaryDTO": {"beginPotentialStamina": 95, "recoveryHeartRate": 40}})),
+        )
+        # a flat-shape row too
+        conn.execute(
+            "INSERT INTO activity (activity_id, raw_json) VALUES (?, ?)",
+            (9101, json.dumps({"maxPowerTwentyMinutes": 150.5})),
+        )
+        conn.commit()
+        migrate_activity_table_v2(conn)
+        cols = _cols(conn, "activity")
+        for c in self._COLS:
+            assert c in cols
+        r1 = _row(conn, "activity", "activity_id", 9100)
+        assert r1["begin_potential_stamina"] == 95
+        assert r1["recovery_heart_rate"] == 40
+        r2 = _row(conn, "activity", "activity_id", 9101)
+        assert r2["max_power_twenty_minutes"] == pytest.approx(150.5)
+        conn.close()
+
+    def test_migration_idempotent(self, temp_db):
+        migrate_activity_table_v2(temp_db)  # columns already exist from init_db
+        assert "begin_potential_stamina" in _cols(temp_db, "activity")
+
+
+class TestDailySummaryV2Columns:
+    """daily_summary: abnormalHeartRateAlertsCount, averageMonitoringEnvironmentAltitude,
+    restStressDuration, activityStressDuration (all top-level)."""
+
+    _COLS = (
+        "abnormal_heart_rate_alerts_count",
+        "average_monitoring_environment_altitude",
+        "rest_stress_duration",
+        "activity_stress_duration",
+    )
+
+    def test_schema_has_columns(self, temp_db):
+        cols = _cols(temp_db, "daily_summary")
+        for c in self._COLS:
+            assert c in cols, f"Missing: {c}"
+
+    def test_upsert_populates(self, temp_db):
+        upsert_daily_summary(
+            temp_db,
+            {
+                "calendarDate": "2026-07-01",
+                "abnormalHeartRateAlertsCount": 2,
+                "averageMonitoringEnvironmentAltitude": 317.0,
+                "restStressDuration": 12180,
+                "activityStressDuration": 1500,
+            },
+        )
+        row = _row(temp_db, "daily_summary", "calendar_date", "2026-07-01")
+        assert row["abnormal_heart_rate_alerts_count"] == 2
+        assert row["average_monitoring_environment_altitude"] == pytest.approx(317.0)
+        assert row["rest_stress_duration"] == 12180
+        assert row["activity_stress_duration"] == 1500
+
+    def test_migration_adds_and_backfills(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript("CREATE TABLE daily_summary (calendar_date TEXT PRIMARY KEY, raw_json TEXT);")
+        conn.execute(
+            "INSERT INTO daily_summary (calendar_date, raw_json) VALUES (?, ?)",
+            (
+                "2026-07-02",
+                json.dumps(
+                    {
+                        "abnormalHeartRateAlertsCount": 1,
+                        "averageMonitoringEnvironmentAltitude": 50,
+                        "restStressDuration": 3600,
+                        "activityStressDuration": 600,
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+        migrate_daily_summary_v2(conn)
+        row = _row(conn, "daily_summary", "calendar_date", "2026-07-02")
+        assert row["abnormal_heart_rate_alerts_count"] == 1
+        assert row["average_monitoring_environment_altitude"] == 50
+        assert row["rest_stress_duration"] == 3600
+        assert row["activity_stress_duration"] == 600
+        conn.close()
+
+
+class TestSleepV3Columns:
+    """sleep: breathingDisruptionSeverity + avgHeartRate (dailySleepDTO),
+    avgOvernightHrv + restlessMomentsCount (top level)."""
+
+    _COLS = ("breathing_disruption_severity", "avg_overnight_hrv", "restless_moments_count", "avg_heart_rate")
+
+    def test_schema_has_columns(self, temp_db):
+        cols = _cols(temp_db, "sleep")
+        for c in self._COLS:
+            assert c in cols, f"Missing: {c}"
+
+    def test_upsert_populates_nested_and_top_level(self, temp_db):
+        upsert_sleep(
+            temp_db,
+            {
+                "avgOvernightHrv": 50,
+                "restlessMomentsCount": 31,
+                "dailySleepDTO": {
+                    "calendarDate": "2026-07-03",
+                    "sleepTimeSeconds": 28800,
+                    "breathingDisruptionSeverity": "NONE",
+                    "avgHeartRate": 52,
+                },
+            },
+        )
+        row = _row(temp_db, "sleep", "calendar_date", "2026-07-03")
+        assert row["breathing_disruption_severity"] == "NONE"
+        assert row["avg_overnight_hrv"] == 50
+        assert row["restless_moments_count"] == 31
+        assert row["avg_heart_rate"] == 52
+
+    def test_migration_adds_and_backfills(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript("CREATE TABLE sleep (calendar_date TEXT PRIMARY KEY, raw_json TEXT);")
+        conn.execute(
+            "INSERT INTO sleep (calendar_date, raw_json) VALUES (?, ?)",
+            (
+                "2026-07-04",
+                json.dumps(
+                    {
+                        "avgOvernightHrv": 48,
+                        "restlessMomentsCount": 12,
+                        "dailySleepDTO": {"breathingDisruptionSeverity": "LOW", "avgHeartRate": 55},
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+        migrate_sleep_table_v3(conn)
+        row = _row(conn, "sleep", "calendar_date", "2026-07-04")
+        assert row["breathing_disruption_severity"] == "LOW"
+        assert row["avg_overnight_hrv"] == 48
+        assert row["restless_moments_count"] == 12
+        assert row["avg_heart_rate"] == 55
+        conn.close()
+
+
+class TestMultisportChildActivityStorage:
+    """A multisport child is fetched only via the activity (details) endpoint and
+    has no list record, so the activity_details save path must INSERT the row and
+    populate it from the details shape (#review)."""
+
+    def test_detail_only_activity_is_created_and_populated(self, temp_db):
+        # No prior upsert_activity — simulates a child with no list record.
+        detail = {
+            "activityId": 55001,
+            "activityName": "T1 Swim",
+            "activityTypeDTO": {"typeKey": "open_water_swimming", "typeId": 26, "parentTypeId": 26},
+            "locationName": "Malaga",
+            "summaryDTO": {
+                "startTimeLocal": "2026-06-01T09:00:00",
+                "distance": 1500.0,
+                "duration": 1800.0,
+                "averageHR": 140,
+                "maxHR": 160,
+                "beginPotentialStamina": 100,
+            },
+        }
+        n = save_to_db(temp_db, "activity_details", [detail], cal_date="55001")
+        assert n == 1
+        row = _row(temp_db, "activity", "activity_id", 55001)
+        assert row, "child activity row was not created"
+        assert row["activity_name"] == "T1 Swim"
+        assert row["activity_type"] == "open_water_swimming"
+        assert row["activity_type_id"] == 26
+        assert row["start_time_local"] == "2026-06-01T09:00:00"
+        assert row["distance_meters"] == pytest.approx(1500.0)
+        assert row["average_hr"] == 140
+        assert row["begin_potential_stamina"] == 100
+
+    def test_detail_does_not_clobber_list_values(self, temp_db):
+        # A list record set the name; a later detail lacking it must not wipe it.
+        upsert_activity(
+            temp_db,
+            {
+                "activityId": 55002,
+                "activityName": "Morning Ride",
+                "activityType": {"typeKey": "cycling", "typeId": 2, "parentTypeId": 2},
+                "distance": 40000.0,
+            },
+        )
+        save_to_db(
+            temp_db,
+            "activity_details",
+            [{"activityId": 55002, "summaryDTO": {"averageHR": 145}}],
+        )
+        row = _row(temp_db, "activity", "activity_id", 55002)
+        assert row["activity_name"] == "Morning Ride"  # preserved
+        assert row["distance_meters"] == pytest.approx(40000.0)  # preserved
+        assert row["average_hr"] == 145  # filled from detail
