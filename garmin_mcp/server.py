@@ -38,6 +38,7 @@ _TS_ISO_LOCAL = "iso_local"
 
 # What the non-timestamp positions of each tuple mean — the one thing that
 # cannot be inferred from the data itself.  Applied in order, timestamps skipped.
+# Position labels for the intraday tuple feeds (consumed by _describe_tuple).
 _RAW_JSON_FIELDS = {
     "$.bodyBattery.data": ["level", "?", "status"],
     "$.bodyBatteryValuesArray": ["level", "?", "status"],
@@ -49,6 +50,45 @@ _RAW_JSON_FIELDS = {
     "$.stress.data": ["stress"],
     "$.stressValuesArray": ["stress"],
 }
+
+# Scalar counterpart to _RAW_JSON_FIELDS: high-value fields the 31-agent review
+# found trapped in raw_json, labelled per table so garmin_schema can point the
+# model straight at them with json_extract. Fields now promoted to typed columns
+# are cross-referenced to that column; the rest are raw_json-only. garmin_schema
+# samples several rows (not one), so a field present on only some activity
+# types / devices — e.g. Stamina, power, FTP — still surfaces.
+_RAW_JSON_NOTABLE = {
+    "activity": {
+        "$.summaryDTO.beginPotentialStamina": "stamina % at start (column begin_potential_stamina)",
+        "$.summaryDTO.minAvailableStamina": "lowest stamina % reached (column min_available_stamina)",
+        "$.summaryDTO.functionalThresholdPower": "FTP, watts (column functional_threshold_power)",
+        "$.summaryDTO.maxPowerTwentyMinutes": "best 20-min power, watts (column max_power_twenty_minutes)",
+        "$.summaryDTO.recoveryHeartRate": "HR drop 1 min after stopping (column recovery_heart_rate)",
+        "$.summaryDTO.avgGradeAdjustedSpeed": "grade-adjusted pace, m/s (column avg_grade_adjusted_speed)",
+        "$.summaryDTO.averageMovingSpeed": "avg speed excluding pauses, m/s (raw_json only)",
+        "$.summaryDTO.trainingEffectLabel": "aerobic training-effect label (raw_json only)",
+    },
+    "daily_summary": {
+        "$.abnormalHeartRateAlertsCount": "abnormal-HR alerts (column abnormal_heart_rate_alerts_count)",
+        "$.averageMonitoringEnvironmentAltitude": "avg ambient altitude, m (column average_monitoring_environment_altitude)",
+        "$.restStressDuration": "resting-stress seconds (column rest_stress_duration)",
+        "$.activityStressDuration": "activity-stress seconds (column activity_stress_duration)",
+    },
+    "sleep": {
+        "$.dailySleepDTO.breathingDisruptionSeverity": "breathing-disruption severity (column breathing_disruption_severity)",
+        "$.avgOvernightHrv": "overnight avg HRV, ms (column avg_overnight_hrv)",
+        "$.restlessMomentsCount": "restless moments in the night (column restless_moments_count)",
+        "$.dailySleepDTO.avgHeartRate": "overnight avg HR (column avg_heart_rate)",
+    },
+    "health_status": {
+        "$.value": "metric value; one row per (calendar_date, type) e.g. SKIN_TEMP_F / HRV_STATUS",
+    },
+}
+
+# garmin_schema reads the shape of raw_json back from several stored rows, not
+# one, so a field or array present on only some activity types / devices still
+# surfaces.
+_RAW_JSON_SAMPLE_ROWS = 25
 
 _EPOCH_MS_HINT = (
     "epoch_ms is GMT: use datetime(ts/1000,'unixepoch') and add your UTC offset "
@@ -78,19 +118,42 @@ def _classify(value):
     return type(value).__name__
 
 
-def _describe_raw_json(conn, table):
-    """Read the shape of *table*'s intraday arrays back from a stored row."""
+def _raw_json_samples(conn, table):
+    """Up to _RAW_JSON_SAMPLE_ROWS parsed raw_json payloads for *table*.
+
+    Reading one row (the old LIMIT 1) missed every field an activity type or
+    device doesn't carry — a treadmill run has no power, a swim no stamina — so
+    those never surfaced. When the table has an ``activity_type`` column, take a
+    few rows per type to span the variety; otherwise take the most recent rows.
+    """
     cols = [c["name"] for c in query(conn, f"PRAGMA table_info([{table}])")]
     if "raw_json" not in cols:
-        return {}
-    rows = query(conn, f"SELECT raw_json FROM [{table}] WHERE raw_json IS NOT NULL LIMIT 1")
-    if not rows:
-        return {}
-    try:
-        payload = json.loads(rows[0]["raw_json"])
-    except (TypeError, ValueError):
-        return {}
+        return []
+    if "activity_type" in cols:
+        sql = (
+            "SELECT raw_json FROM ("
+            "  SELECT raw_json, ROW_NUMBER() OVER "
+            "    (PARTITION BY activity_type ORDER BY rowid DESC) AS rn"
+            f"  FROM [{table}] WHERE raw_json IS NOT NULL"
+            f") WHERE rn <= 3 LIMIT {_RAW_JSON_SAMPLE_ROWS}"
+        )
+    else:
+        sql = f"SELECT raw_json FROM [{table}] WHERE raw_json IS NOT NULL ORDER BY rowid DESC LIMIT {_RAW_JSON_SAMPLE_ROWS}"
+    payloads = []
+    for row in query(conn, sql):
+        try:
+            payloads.append(json.loads(row["raw_json"]))
+        except (TypeError, ValueError):
+            continue
+    return payloads
 
+
+def _describe_raw_json(conn, table):
+    """Read the shape of *table*'s intraday arrays back from several stored rows.
+
+    Merges the arrays found across the sampled rows (the first row carrying an
+    array fixes its shape), so a feed present on only some rows still shows up.
+    """
     shapes = {}
 
     def visit(node, path):
@@ -100,14 +163,41 @@ def _describe_raw_json(conn, table):
             return
         if not isinstance(node, list) or len(node) <= 5:
             return
+        key = f"$.{path.lstrip('.')}"
+        if key in shapes:
+            return  # already described from an earlier sample
         head = node[0]
         if isinstance(head, dict):
-            shapes[f"$.{path.lstrip('.')}"] = "{" + ", ".join(sorted(head)) + "}"
+            shapes[key] = "{" + ", ".join(sorted(head)) + "}"
         elif isinstance(head, list) and head:
-            shapes[f"$.{path.lstrip('.')}"] = _describe_tuple(node, f"$.{path.lstrip('.')}")
+            shapes[key] = _describe_tuple(node, key)
 
-    visit(payload, "")
+    for payload in _raw_json_samples(conn, table):
+        visit(payload, "")
     return shapes
+
+
+def _json_path_present(payload, path):
+    """True if a non-null value exists at a dotted ``$.a.b`` json path."""
+    node = payload
+    for part in path.lstrip("$").lstrip(".").split("."):
+        if isinstance(node, dict) and node.get(part) is not None:
+            node = node[part]
+        else:
+            return False
+    return True
+
+
+def _notable_raw_json_fields(conn, table):
+    """High-value raw_json fields (from _RAW_JSON_NOTABLE) that are actually
+    present in *table*'s sampled rows, labelled for the model."""
+    catalog = _RAW_JSON_NOTABLE.get(table)
+    if not catalog:
+        return {}
+    samples = _raw_json_samples(conn, table)
+    if not samples:
+        return {}
+    return {path: label for path, label in catalog.items() if any(_json_path_present(p, path) for p in samples)}
 
 
 def _describe_tuple(samples, path):
@@ -176,6 +266,9 @@ def garmin_schema(tables: str = "") -> str:
             shapes = _describe_raw_json(conn, name)
             if shapes:
                 result["tables"][name]["raw_json"] = shapes
+            notable = _notable_raw_json_fields(conn, name)
+            if notable:
+                result["tables"][name]["fields"] = notable
             if name in _RAW_JSON_SENTINELS:
                 result["tables"][name]["caveat"] = _RAW_JSON_SENTINELS[name]
 

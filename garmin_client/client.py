@@ -39,6 +39,7 @@ from .endpoints import (
     monthly_rest,
     profile_endpoints,
     profile_graphql,
+    workouts_search_url,
 )
 
 log = logging.getLogger(__name__)
@@ -1046,6 +1047,40 @@ class GarminClient:
         )
         _process_batch(profile)
 
+        # 1b. Workout library beyond the first page. The profile batch fetched
+        # start=0&limit=100; a user with a larger library had every workout past
+        # the hundredth silently dropped (#review). Only probe further pages when
+        # the first came back full.
+        wk_first = profile.get("workouts", {})
+        wk_data = wk_first.get("data") if isinstance(wk_first, dict) else None
+        if isinstance(wk_data, list) and len(wk_data) >= 100:
+            wk_offset = 100
+            while True:
+                wk_result = self._fetch_batch(
+                    {f"workouts_page_{wk_offset}": workouts_search_url(start=wk_offset, limit=100)},
+                    {},
+                )
+                wk_page = wk_result.get(f"workouts_page_{wk_offset}", {})
+                if wk_page.get("status") != 200 or not wk_page.get("data"):
+                    break
+                workouts_page = wk_page["data"]
+                if not isinstance(workouts_page, list) or len(workouts_page) == 0:
+                    break
+                print(f"    Workouts page: fetched {len(workouts_page)} more (offset {wk_offset})")
+                if on_batch:
+                    on_batch("workouts", workouts_page)
+                else:
+                    if "workouts" not in all_results:
+                        all_results["workouts"] = {"status": 200, "data": []}
+                    existing = all_results["workouts"].get("data")
+                    if isinstance(existing, list):
+                        existing.extend(workouts_page)
+                    else:
+                        all_results["workouts"] = {"status": 200, "data": list(workouts_page)}
+                wk_offset += 100
+                if len(workouts_page) < 100:
+                    break
+
         # 2. Full-range queries
         print("  Fetching full-range data (activities, HRV, training, VO2max, weight)...")
         full_rest = full_range_rest(self._display_name, s_date, e_date)
@@ -1168,9 +1203,17 @@ class GarminClient:
 
         if activity_ids:
             print(f"  Fetching per-activity details ({len(activity_ids)} new)...")
-            for i, aid in enumerate(activity_ids):
+            # A growable queue so multisport children discovered mid-loop are
+            # fetched too; `seen` guards against re-fetching and cycles.
+            skip_ids = known_activity_ids or set()
+            queue = list(activity_ids)
+            seen = set(queue)
+            i = 0
+            while i < len(queue):
+                aid = queue[i]
                 if i % 10 == 0 and i > 0:
-                    print(f"    Activity {i}/{len(activity_ids)}")
+                    print(f"    Activity {i}/{len(queue)}")
+                i += 1
                 detail_eps = activity_detail_endpoints(aid)
                 detail_result = self._fetch_batch(detail_eps, {})
                 for ep_name, result in detail_result.items():
@@ -1180,6 +1223,15 @@ class GarminClient:
                         on_batch(ep_name, result["data"], cal_date=str(aid))
                     else:
                         all_results[f"{ep_name}_{aid}"] = result
+                # A multisport parent lists its legs under metadataDTO.childIds.
+                # Those child activities never appear in the activities list, so
+                # fetch each via the activity endpoint or they are lost (#review).
+                detail_data = (detail_result.get("activity_details") or {}).get("data")
+                for child_id in _multisport_child_ids(detail_data):
+                    if child_id in seen or child_id in skip_ids:
+                        continue
+                    seen.add(child_id)
+                    queue.append(child_id)
 
         return all_results
 
@@ -1256,6 +1308,20 @@ def _merge_data(existing, new):
     if isinstance(existing, list) and isinstance(new, list):
         return existing + new
     return new
+
+
+def _multisport_child_ids(activity_details_data):
+    """Child activity IDs of a multisport parent (``metadataDTO.childIds``).
+
+    Returns [] for a non-multisport activity or any unexpected shape.
+    """
+    if not isinstance(activity_details_data, dict):
+        return []
+    meta = activity_details_data.get("metadataDTO")
+    child_ids = meta.get("childIds") if isinstance(meta, dict) else None
+    if not isinstance(child_ids, list):
+        return []
+    return [cid for cid in child_ids if cid]
 
 
 def _flatten_single(data):

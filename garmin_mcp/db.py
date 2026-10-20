@@ -152,6 +152,10 @@ CREATE TABLE IF NOT EXISTS daily_summary (
     avg_waking_respiration          REAL,
     highest_respiration             REAL,
     lowest_respiration              REAL,
+    abnormal_heart_rate_alerts_count        INTEGER,
+    average_monitoring_environment_altitude REAL,
+    rest_stress_duration                    INTEGER,
+    activity_stress_duration                INTEGER,
     source                          TEXT,
     raw_json                        TEXT
 );
@@ -185,6 +189,10 @@ CREATE TABLE IF NOT EXISTS sleep (
     sleep_light_pct             INTEGER,
     sleep_score_rem             INTEGER,
     sleep_score_deep            INTEGER,
+    breathing_disruption_severity TEXT,
+    avg_overnight_hrv           INTEGER,
+    restless_moments_count      INTEGER,
+    avg_heart_rate              INTEGER,
     raw_json                    TEXT
 );
 
@@ -330,10 +338,18 @@ CREATE TABLE IF NOT EXISTS training_status (
     raw_json        TEXT
 );
 
+-- One row per (day, metric type). healthStatusSummary returns a `metrics`
+-- list of {type, status, value} (SKIN_TEMP_F, HRV_STATUS, …); a calendar_date
+-- PK let the last metric in the array overwrite all the others, so only one
+-- type ever survived per day (#review). Keying on (calendar_date, type) stores
+-- every metric.
 CREATE TABLE IF NOT EXISTS health_status (
-    calendar_date       TEXT PRIMARY KEY,
-    overall_status      TEXT,
-    raw_json            TEXT
+    calendar_date       TEXT NOT NULL,
+    type                TEXT NOT NULL,
+    status              TEXT,
+    value               REAL,
+    raw_json            TEXT,
+    PRIMARY KEY (calendar_date, type)
 );
 
 CREATE TABLE IF NOT EXISTS daily_events (
@@ -414,6 +430,12 @@ CREATE TABLE IF NOT EXISTS activity (
     direct_workout_rpe                  INTEGER,
     begin_pack_weight                   REAL,
     end_pack_weight                     REAL,
+    begin_potential_stamina             INTEGER,
+    end_potential_stamina               INTEGER,
+    min_available_stamina               INTEGER,
+    functional_threshold_power          REAL,
+    recovery_heart_rate                 INTEGER,
+    max_power_twenty_minutes            REAL,
     raw_json                            TEXT
 );
 
@@ -1353,26 +1375,46 @@ def migrate_floors_totals(conn: sqlite3.Connection) -> None:
 
 
 def migrate_health_status(conn: sqlite3.Connection) -> None:
-    """Backfill overall_status from raw_json and drop error-envelope rows (#83).
+    """Rebuild the pre-#review health_status table to one row per (day, type).
 
-    The upsert read overallStatus but the payload key is status, so the
-    column was NULL on every row; GraphQL error envelopes were also stored
-    as if they were a day's health status.
+    The old table keyed on calendar_date, so each metric in the
+    healthStatusSummary ``metrics`` list overwrote the previous and only the
+    last type (e.g. SKIN_TEMP_F) survived per day. The new schema keys on
+    (calendar_date, type). Each surviving legacy row holds a single metric in
+    raw_json, so its type/status/value are recovered from it and re-inserted via
+    upsert_health_status; GraphQL error-envelope rows are dropped. Modeled on the
+    health_snapshot rebuild — idempotent, and retriable if interrupted mid-run.
+
+    The overwritten metric types are gone from the DB (they were never stored)
+    and only a future sync repopulates them; this migration loses no row that
+    was actually kept.
     """
-    conn.execute(
-        """UPDATE health_status
-           SET overall_status = COALESCE(
-               json_extract(raw_json, '$.status'),
-               json_extract(raw_json, '$.overallStatus')
-           )
-           WHERE overall_status IS NULL AND raw_json IS NOT NULL"""
-    )
-    conn.execute(
-        """DELETE FROM health_status
-           WHERE overall_status IS NULL
-             AND raw_json IS NOT NULL
-             AND json_extract(raw_json, '$.message') IS NOT NULL"""
-    )
+    # Recover from an interrupted earlier run: a surviving temp table means the
+    # rebuild did not finish — restore the original and start over.
+    leftover = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_health_status_old'").fetchone()
+    if leftover:
+        conn.execute("DROP TABLE IF EXISTS health_status")
+        conn.execute("ALTER TABLE _health_status_old RENAME TO health_status")
+
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(health_status)")]
+    if not cols or "type" in cols:
+        return  # table absent (fresh install builds the new schema) or already migrated
+
+    old = conn.execute("SELECT calendar_date, raw_json FROM health_status").fetchall()
+    conn.execute("ALTER TABLE health_status RENAME TO _health_status_old")
+    # Recreate health_status with the (calendar_date, type) schema; every other
+    # CREATE IF NOT EXISTS in the script is a no-op.
+    conn.executescript(_SCHEMA_SQL)
+    for cal, raw in old:
+        rec = None
+        if raw:
+            try:
+                rec = json.loads(raw)
+            except (TypeError, ValueError):
+                rec = None
+        if isinstance(rec, dict):
+            upsert_health_status(conn, rec, cal_date=cal)
+    conn.execute("DROP TABLE _health_status_old")
     conn.commit()
 
 
@@ -1851,6 +1893,109 @@ def migrate_training_status_table(conn: sqlite3.Connection) -> None:
                 log.debug("Migration note (training_status.%s): %s", col, e)
 
 
+def migrate_activity_table_v2(conn: sqlite3.Connection) -> None:
+    """Promote stamina / FTP / recovery-HR / 20-min-power to columns (#review).
+
+    These live under summaryDTO on details records and at the top level on list
+    records, so the backfill checks both shapes (like migrate_activity_table).
+    """
+    added = _add_columns(
+        conn,
+        "activity",
+        [
+            ("begin_potential_stamina", "INTEGER"),
+            ("end_potential_stamina", "INTEGER"),
+            ("min_available_stamina", "INTEGER"),
+            ("functional_threshold_power", "REAL"),
+            ("recovery_heart_rate", "INTEGER"),
+            ("max_power_twenty_minutes", "REAL"),
+        ],
+    )
+    if not added:
+        return
+    key_map = {
+        "begin_potential_stamina": "beginPotentialStamina",
+        "end_potential_stamina": "endPotentialStamina",
+        "min_available_stamina": "minAvailableStamina",
+        "functional_threshold_power": "functionalThresholdPower",
+        "recovery_heart_rate": "recoveryHeartRate",
+        "max_power_twenty_minutes": "maxPowerTwentyMinutes",
+    }
+    for col in added:
+        key = key_map[col]
+        conn.execute(
+            f"""UPDATE activity
+                SET {col} = COALESCE(
+                    json_extract(raw_json, ?),
+                    json_extract(raw_json, ?)
+                )
+                WHERE raw_json IS NOT NULL AND {col} IS NULL""",
+            (f"$.{key}", f"$.summaryDTO.{key}"),
+        )
+    conn.commit()
+
+
+def migrate_daily_summary_v2(conn: sqlite3.Connection) -> None:
+    """Promote abnormal-HR alerts, monitoring altitude and rest/activity stress
+    durations to columns (#review). All are top-level daily_summary keys."""
+    added = _add_columns(
+        conn,
+        "daily_summary",
+        [
+            ("abnormal_heart_rate_alerts_count", "INTEGER"),
+            ("average_monitoring_environment_altitude", "REAL"),
+            ("rest_stress_duration", "INTEGER"),
+            ("activity_stress_duration", "INTEGER"),
+        ],
+    )
+    _backfill_from_raw(
+        conn,
+        "daily_summary",
+        ["calendar_date"],
+        added,
+        {
+            "abnormal_heart_rate_alerts_count": "abnormalHeartRateAlertsCount",
+            "average_monitoring_environment_altitude": "averageMonitoringEnvironmentAltitude",
+            "rest_stress_duration": "restStressDuration",
+            "activity_stress_duration": "activityStressDuration",
+        },
+    )
+
+
+def migrate_sleep_table_v3(conn: sqlite3.Connection) -> None:
+    """Promote breathing-disruption severity, overnight HRV, restless moments and
+    the DTO average heart rate to columns (#review).
+
+    avgOvernightHrv / restlessMomentsCount sit at the sleep record top level;
+    breathingDisruptionSeverity / avgHeartRate are nested under dailySleepDTO.
+    The existing average_hr_sleep column reads averageHrSleep/avgSleepHR, which
+    the payload rarely carries — dailySleepDTO.avgHeartRate is where the value
+    actually lives, so it gets its own column. Idempotent (WHERE col IS NULL).
+    """
+    _add_columns(
+        conn,
+        "sleep",
+        [
+            ("breathing_disruption_severity", "TEXT"),
+            ("avg_overnight_hrv", "INTEGER"),
+            ("restless_moments_count", "INTEGER"),
+            ("avg_heart_rate", "INTEGER"),
+        ],
+    )
+    update_map = {
+        "breathing_disruption_severity": "$.dailySleepDTO.breathingDisruptionSeverity",
+        "avg_overnight_hrv": "$.avgOvernightHrv",
+        "restless_moments_count": "$.restlessMomentsCount",
+        "avg_heart_rate": "$.dailySleepDTO.avgHeartRate",
+    }
+    for col, path in update_map.items():
+        conn.execute(
+            f"UPDATE sleep SET {col} = json_extract(raw_json, ?) WHERE raw_json IS NOT NULL AND {col} IS NULL",
+            (path,),
+        )
+    conn.commit()
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Create all tables and indexes if they do not already exist."""
     conn.executescript(_SCHEMA_SQL)
@@ -1872,11 +2017,14 @@ def init_db(conn: sqlite3.Connection) -> None:
     migrate_gear_table_v2(conn)
     migrate_hollow_tables(conn)
     migrate_sleep_table_v2(conn)
+    migrate_sleep_table_v3(conn)
     migrate_fitness_age_table(conn)
     migrate_weight_table_v3(conn)
     migrate_activity_table(conn)
+    migrate_activity_table_v2(conn)
     migrate_running_dynamics_backfill(conn)
     migrate_daily_summary_backfill(conn)
+    migrate_daily_summary_v2(conn)
     migrate_stress_max_level(conn)
     migrate_floors_totals(conn)
     migrate_health_status(conn)
@@ -2086,6 +2234,87 @@ def _shape_get(record: dict, summary: dict, key: str):
     return summary.get(key) if val is None else val
 
 
+def _detail_activity_columns(record: dict) -> dict:
+    """Map an activity *details* payload to ``activity`` columns.
+
+    The details endpoint (``/activity-service/activity/{id}``) nests identity
+    under ``activityTypeDTO`` and the measurements under ``summaryDTO`` — a
+    different shape from the list endpoint ``upsert_activity`` reads. The
+    activity_details save path COALESCEs these in so a row that only ever
+    arrives as a detail (a multisport child from ``metadataDTO.childIds``, which
+    has no list record) is still fully populated, without clobbering anything a
+    list record already set.
+    """
+    s = record.get("summaryDTO") or {}
+    atype = record.get("activityTypeDTO") or record.get("activityType") or {}
+
+    def sg(key):
+        # summaryDTO first (details shape), top level as fallback; `is None` so 0 survives.
+        return _shape_get(record, s, key)
+
+    avg_cad = (
+        s.get("averageRunCadence") or s.get("averageBikeCadence") or s.get("averageSwimCadence") or sg("averageCadence")
+    )
+    max_cad = s.get("maxRunCadence") or s.get("maxBikeCadence") or s.get("maxSwimCadence") or sg("maxCadence")
+    # Detail shape calls it normalizedPower; list shape normPower. `is None` so a 0 survives.
+    norm_power = _any_key(s, "normalizedPower", "normPower")
+    if norm_power is None:
+        norm_power = _any_key(record, "normalizedPower", "normPower")
+    return {
+        "activity_name": record.get("activityName"),
+        "activity_type": atype.get("typeKey") if isinstance(atype, dict) else None,
+        "activity_type_id": atype.get("typeId") if isinstance(atype, dict) else None,
+        "parent_type_id": atype.get("parentTypeId") if isinstance(atype, dict) else None,
+        "start_time_local": sg("startTimeLocal"),
+        "start_time_gmt": sg("startTimeGMT"),
+        "duration_seconds": sg("duration"),
+        "elapsed_duration_seconds": sg("elapsedDuration"),
+        "moving_duration_seconds": sg("movingDuration"),
+        "distance_meters": sg("distance"),
+        "calories": sg("calories"),
+        "bmr_calories": sg("bmrCalories"),
+        "average_hr": sg("averageHR"),
+        "max_hr": sg("maxHR"),
+        "average_speed": sg("averageSpeed"),
+        "max_speed": sg("maxSpeed"),
+        "elevation_gain": sg("elevationGain"),
+        "elevation_loss": sg("elevationLoss"),
+        "min_elevation": sg("minElevation"),
+        "max_elevation": sg("maxElevation"),
+        "avg_power": sg("averagePower"),
+        "max_power": sg("maxPower"),
+        "norm_power": norm_power,
+        "aerobic_training_effect": _any_key(s, "aerobicTrainingEffect", "trainingEffect"),
+        "anaerobic_training_effect": sg("anaerobicTrainingEffect"),
+        "training_load": _any_key(s, "activityTrainingLoad", "trainingLoad"),
+        "moderate_intensity_minutes": sg("moderateIntensityMinutes"),
+        "vigorous_intensity_minutes": sg("vigorousIntensityMinutes"),
+        "start_latitude": sg("startLatitude"),
+        "start_longitude": sg("startLongitude"),
+        "end_latitude": sg("endLatitude"),
+        "end_longitude": sg("endLongitude"),
+        "location_name": record.get("locationName"),
+        "water_estimated": sg("waterEstimated"),
+        "avg_cadence": avg_cad,
+        "max_cadence": max_cad,
+        "avg_grade_adjusted_speed": sg("avgGradeAdjustedSpeed"),
+        "activity_steps": sg("steps"),
+        "activity_min_hr": sg("minHR"),
+        "body_battery_change": sg("differenceBodyBattery"),
+        "total_work_kcal": sg("totalWork"),
+        "direct_workout_feel": sg("directWorkoutFeel"),
+        "direct_workout_rpe": sg("directWorkoutRpe"),
+        "begin_pack_weight": sg("beginPackWeight"),
+        "end_pack_weight": sg("endPackWeight"),
+        "begin_potential_stamina": sg("beginPotentialStamina"),
+        "end_potential_stamina": sg("endPotentialStamina"),
+        "min_available_stamina": sg("minAvailableStamina"),
+        "functional_threshold_power": sg("functionalThresholdPower"),
+        "recovery_heart_rate": sg("recoveryHeartRate"),
+        "max_power_twenty_minutes": sg("maxPowerTwentyMinutes"),
+    }
+
+
 def upsert_running_dynamics(conn: sqlite3.Connection, aid: int, record: dict) -> None:
     # Dynamics fields live in summaryDTO on activity details records, but
     # stride length only exists on list records, as avgStrideLength (#83).
@@ -2146,6 +2375,8 @@ def upsert_daily_summary(conn: sqlite3.Connection, record: dict) -> None:
             body_battery_lowest, body_battery_most_recent, body_battery_at_wake,
             body_battery_during_sleep, average_spo2, lowest_spo2, latest_spo2,
             avg_waking_respiration, highest_respiration, lowest_respiration,
+            abnormal_heart_rate_alerts_count, average_monitoring_environment_altitude,
+            rest_stress_duration, activity_stress_duration,
             source, raw_json
         ) VALUES (
             :calendar_date, :total_steps, :daily_step_goal,
@@ -2162,6 +2393,8 @@ def upsert_daily_summary(conn: sqlite3.Connection, record: dict) -> None:
             :body_battery_lowest, :body_battery_most_recent, :body_battery_at_wake,
             :body_battery_during_sleep, :average_spo2, :lowest_spo2, :latest_spo2,
             :avg_waking_respiration, :highest_respiration, :lowest_respiration,
+            :abnormal_heart_rate_alerts_count, :average_monitoring_environment_altitude,
+            :rest_stress_duration, :activity_stress_duration,
             :source, :raw_json
         )
         """,
@@ -2213,6 +2446,10 @@ def upsert_daily_summary(conn: sqlite3.Connection, record: dict) -> None:
             "avg_waking_respiration": record.get("avgWakingRespirationValue"),
             "highest_respiration": record.get("highestRespirationValue"),
             "lowest_respiration": record.get("lowestRespirationValue"),
+            "abnormal_heart_rate_alerts_count": record.get("abnormalHeartRateAlertsCount"),
+            "average_monitoring_environment_altitude": record.get("averageMonitoringEnvironmentAltitude"),
+            "rest_stress_duration": record.get("restStressDuration"),
+            "activity_stress_duration": record.get("activityStressDuration"),
             "source": record.get("source"),
             "raw_json": json.dumps(record),
         },
@@ -2455,6 +2692,10 @@ def upsert_sleep(conn: sqlite3.Connection, record: dict) -> None:
             sleep_light_pct             = COALESCE(?, sleep_light_pct),
             sleep_score_rem             = COALESCE(?, sleep_score_rem),
             sleep_score_deep            = COALESCE(?, sleep_score_deep),
+            breathing_disruption_severity = COALESCE(?, breathing_disruption_severity),
+            avg_overnight_hrv           = COALESCE(?, avg_overnight_hrv),
+            restless_moments_count      = COALESCE(?, restless_moments_count),
+            avg_heart_rate              = COALESCE(?, avg_heart_rate),
             raw_json                    = ?
         WHERE calendar_date = ?
         """,
@@ -2491,6 +2732,12 @@ def upsert_sleep(conn: sqlite3.Connection, record: dict) -> None:
             ((dto.get("sleepScores") or {}).get("lightPercentage") or {}).get("value"),
             ((dto.get("sleepScores") or {}).get("remPercentage") or {}).get("value"),
             ((dto.get("sleepScores") or {}).get("deepPercentage") or {}).get("value"),
+            # breathingDisruptionSeverity / avgHeartRate are nested in the DTO;
+            # avgOvernightHrv / restlessMomentsCount sit at the record top level.
+            dto.get("breathingDisruptionSeverity"),
+            record.get("avgOvernightHrv"),
+            record.get("restlessMomentsCount"),
+            dto.get("avgHeartRate"),
             json.dumps(record),
             calendar_date,
         ),
@@ -2579,6 +2826,12 @@ def upsert_activity(conn: sqlite3.Connection, record: dict) -> None:
             direct_workout_rpe       = COALESCE(:direct_workout_rpe, direct_workout_rpe),
             begin_pack_weight        = COALESCE(:begin_pack_weight, begin_pack_weight),
             end_pack_weight          = COALESCE(:end_pack_weight, end_pack_weight),
+            begin_potential_stamina    = COALESCE(:begin_potential_stamina, begin_potential_stamina),
+            end_potential_stamina      = COALESCE(:end_potential_stamina, end_potential_stamina),
+            min_available_stamina      = COALESCE(:min_available_stamina, min_available_stamina),
+            functional_threshold_power = COALESCE(:functional_threshold_power, functional_threshold_power),
+            recovery_heart_rate        = COALESCE(:recovery_heart_rate, recovery_heart_rate),
+            max_power_twenty_minutes   = COALESCE(:max_power_twenty_minutes, max_power_twenty_minutes),
             raw_json = :raw_json
         WHERE activity_id = :activity_id
         """,
@@ -2638,6 +2891,14 @@ def upsert_activity(conn: sqlite3.Connection, record: dict) -> None:
             "direct_workout_rpe": _shape_get(record, summary, "directWorkoutRpe"),
             "begin_pack_weight": _shape_get(record, summary, "beginPackWeight"),
             "end_pack_weight": _shape_get(record, summary, "endPackWeight"),
+            # Stamina/FTP/recovery-HR/20-min-power live in summaryDTO on details
+            # records and at the top level on list records (#review).
+            "begin_potential_stamina": _shape_get(record, summary, "beginPotentialStamina"),
+            "end_potential_stamina": _shape_get(record, summary, "endPotentialStamina"),
+            "min_available_stamina": _shape_get(record, summary, "minAvailableStamina"),
+            "functional_threshold_power": _shape_get(record, summary, "functionalThresholdPower"),
+            "recovery_heart_rate": _shape_get(record, summary, "recoveryHeartRate"),
+            "max_power_twenty_minutes": _shape_get(record, summary, "maxPowerTwentyMinutes"),
             "raw_json": json.dumps(record),
         },
     )
@@ -3769,20 +4030,38 @@ def upsert_training_status(conn, record, cal_date=None):
     )
 
 
-def upsert_health_status(conn, record, cal_date=None):
+def upsert_health_status(conn, record, cal_date=None) -> int:
+    """Store healthStatusSummary metrics, one row per (calendar_date, type).
+
+    The payload is a ``metrics`` list of ``{type, status, value}`` (SKIN_TEMP_F,
+    HRV_STATUS, …). The old calendar_date PK let each metric overwrite the
+    previous, so only the last type survived per day (#review). Accepts a single
+    metric dict or a wrapper carrying a ``metrics`` list. GraphQL error
+    envelopes (a ``message`` and no type/status) are dropped. Returns the number
+    of rows written.
+    """
+    if not isinstance(record, dict):
+        return 0
     d = cal_date or record.get("calendarDate") or record.get("date")
     if not d:
-        return
-    # The payload key is `status`; overallStatus never appears (#83 round 2).
-    status = _any_key(record, "overallStatus", "status")
-    if status is None and record.get("message") is not None:
-        # GraphQL error envelope — storing it as a day's health status only
-        # pollutes the table (0/4218 rows held a status on a real DB).
-        return
+        return 0
+    metrics = record.get("metrics")
+    if isinstance(metrics, list):
+        return sum(upsert_health_status(conn, m, cal_date=d) for m in metrics if isinstance(m, dict))
+    mtype = record.get("type")
+    status = _any_key(record, "status", "overallStatus")
+    if mtype is None:
+        # No metric type: a GraphQL error envelope, or a legacy single-status
+        # record. Drop envelopes; keep a real status under a sentinel type so
+        # the (calendar_date, type) PK is satisfied and the row stays queryable.
+        if status is None:
+            return 0
+        mtype = "OVERALL"
     conn.execute(
-        "INSERT OR REPLACE INTO health_status (calendar_date, overall_status, raw_json) VALUES (?, ?, ?)",
-        (d, status, json.dumps(record)),
+        "INSERT OR REPLACE INTO health_status (calendar_date, type, status, value, raw_json) VALUES (?, ?, ?, ?, ?)",
+        (d, mtype, status, record.get("value"), json.dumps(record)),
     )
+    return 1
 
 
 def upsert_daily_events(conn, record, cal_date=None):
@@ -4416,14 +4695,14 @@ def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str
                 count += 1
 
         elif name == "health_status" or name == "health_status_summary":
-            # GraphQL healthStatusSummary returns a dict, not wrapped in a list
+            # healthStatusSummary unwraps to a `metrics` list (or a wrapper dict
+            # carrying one); upsert_health_status writes a row per metric type and
+            # returns how many it stored.
             if isinstance(data, dict) and "calendarDate" in data:
-                upsert_health_status(conn, data, cal_date)
-                count += 1
+                count += upsert_health_status(conn, data, cal_date)
             else:
                 for rec in records:
-                    upsert_health_status(conn, rec, cal_date)
-                    count += 1
+                    count += upsert_health_status(conn, rec, cal_date)
 
         elif name == "daily_events":
             for rec in records:
@@ -4654,44 +4933,22 @@ def save_to_db(conn: sqlite3.Connection, endpoint_name: str, data, cal_date: str
 
         elif name == "activity_details":
             # Detail endpoint has a different structure (summaryDTO, activityTypeDTO)
-            # than the list endpoint. Don't overwrite the activity table wholesale —
-            # it would null out fields the list endpoint populated. Update raw_json
-            # plus the summaryDTO-derived columns, using COALESCE so a detail record
-            # only fills in values without clobbering anything already set.
+            # than the list endpoint. COALESCE every column in from the detail shape
+            # so a detail record only fills gaps without clobbering list-set values —
+            # and INSERT OR IGNORE first so a multisport child (metadataDTO.childIds),
+            # which has no list record, still lands a row (#review).
             for rec in records:
+                if not isinstance(rec, dict):
+                    continue
                 aid = rec.get("activityId")
                 if aid:
-                    import json as _json
-
-                    summary_dto = rec.get("summaryDTO") or {}
+                    conn.execute("INSERT OR IGNORE INTO activity (activity_id) VALUES (?)", (aid,))
+                    cols = _detail_activity_columns(rec)
+                    set_parts = ["raw_json = ?"] + [f"{c} = COALESCE(?, {c})" for c in cols]
+                    vals = [json.dumps(rec), *cols.values(), aid]
                     conn.execute(
-                        """
-                        UPDATE activity SET
-                            raw_json = ?,
-                            body_battery_change      = COALESCE(?, body_battery_change),
-                            total_work_kcal          = COALESCE(?, total_work_kcal),
-                            avg_grade_adjusted_speed = COALESCE(?, avg_grade_adjusted_speed),
-                            activity_steps           = COALESCE(?, activity_steps),
-                            activity_min_hr          = COALESCE(?, activity_min_hr),
-                            direct_workout_feel      = COALESCE(?, direct_workout_feel),
-                            direct_workout_rpe       = COALESCE(?, direct_workout_rpe),
-                            begin_pack_weight        = COALESCE(?, begin_pack_weight),
-                            end_pack_weight          = COALESCE(?, end_pack_weight)
-                        WHERE activity_id = ?
-                        """,
-                        (
-                            _json.dumps(rec),
-                            _shape_get(rec, summary_dto, "differenceBodyBattery"),
-                            _shape_get(rec, summary_dto, "totalWork"),
-                            _shape_get(rec, summary_dto, "avgGradeAdjustedSpeed"),
-                            _shape_get(rec, summary_dto, "steps"),
-                            _shape_get(rec, summary_dto, "minHR"),
-                            _shape_get(rec, summary_dto, "directWorkoutFeel"),
-                            _shape_get(rec, summary_dto, "directWorkoutRpe"),
-                            _shape_get(rec, summary_dto, "beginPackWeight"),
-                            _shape_get(rec, summary_dto, "endPackWeight"),
-                            aid,
-                        ),
+                        f"UPDATE activity SET {', '.join(set_parts)} WHERE activity_id = ?",
+                        vals,
                     )
                     # Extract running dynamics if present
                     upsert_running_dynamics(conn, aid, rec)
