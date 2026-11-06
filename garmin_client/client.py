@@ -337,7 +337,6 @@ class GarminClient:
 
         log.info("Browser engine: SeleniumBase UC (Chrome)")
 
-
     # ── Browser helpers ──────────────────────────────────────────
 
     def _uc_navigate(self, url: str, reconnect_time: int = 10) -> None:
