@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "ponytail-safe",
+  "description": "Ponytail Safe: a hardened fork of Ponytail 5.3.3.",
+  "owner": { "name": "Stephan Huijgen" },
+  "plugins": [
+    {
+      "name": "ponytail-safe",
+      "description": "Lazy senior dev mode with sandboxed hooks, no network and per-feature consent.",
+      "source": "./ponytail-safe",
+      "category": "productivity"
+    }
+  ]
+}

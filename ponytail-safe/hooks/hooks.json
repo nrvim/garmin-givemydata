@@ -1,0 +1,62 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --permission --allow-fs-read=\"${CLAUDE_PLUGIN_ROOT}/*\" --allow-fs-read=\"${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*\" --allow-fs-read=\"${CLAUDE_PROJECT_DIR:-$PWD}/*\" --allow-fs-write=\"${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*\" \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.js\"",
+            "timeout": 10,
+            "statusMessage": "Loading Ponytail Safe..."
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --permission --allow-fs-read=\"${CLAUDE_PLUGIN_ROOT}/*\" --allow-fs-read=\"${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*\" --allow-fs-read=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*\" --allow-fs-write=\"${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*\" \"${CLAUDE_PLUGIN_ROOT}/hooks/prompt.js\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --permission --allow-fs-read=\"${CLAUDE_PLUGIN_ROOT}/*\" --allow-fs-read=\"${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*\" \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --permission --allow-fs-read=\"${CLAUDE_PLUGIN_ROOT}/*\" --allow-fs-read=\"${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*\" --allow-fs-read=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*\" --allow-fs-write=\"${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*\" \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.js\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --permission --allow-fs-read=\"${CLAUDE_PLUGIN_ROOT}/*\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.js\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

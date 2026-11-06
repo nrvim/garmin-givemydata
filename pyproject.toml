@@ -70,6 +70,9 @@ ignore = [
 [tool.hatch.build.targets.wheel]
 packages = ["garmin_client", "garmin_mcp"]
 
+[tool.hatch.build.targets.sdist]
+exclude = ["ponytail-safe", ".claude-plugin"]
+
 [tool.hatch.build.targets.wheel.force-include]
 "garmin_givemydata.py" = "garmin_givemydata.py"
 

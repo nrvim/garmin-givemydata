@@ -1,0 +1,26 @@
+name: Ponytail Safe
+
+on:
+  push:
+    branches: [main]
+    paths: ["ponytail-safe/**", ".claude-plugin/**", ".github/workflows/ponytail-safe.yml"]
+  pull_request:
+    paths: ["ponytail-safe/**", ".claude-plugin/**", ".github/workflows/ponytail-safe.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  safety-tests:
+    name: Safety tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node --test ponytail-safe/tests/*.test.js
