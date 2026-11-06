@@ -12,8 +12,8 @@ Gebruik:
 import argparse
 import os
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 from datetime import datetime
 
 DEFAULT_INTERVAL = 240  # 4 minuten — Codespace timeout is 30 min inactiviteit
@@ -46,10 +46,10 @@ def main():
     )
     args = parser.parse_args()
 
-    print(f"Keep-alive gestart")
+    print("Keep-alive gestart")
     print(f"  URL:      {args.url}")
     print(f"  Interval: {args.interval}s ({args.interval // 60}m {args.interval % 60}s)")
-    print(f"  Stop:     Ctrl+C\n")
+    print("  Stop:     Ctrl+C\n")
 
     ok_count = 0
     fail_count = 0
@@ -66,7 +66,7 @@ def main():
             print(f"[{now}] ✗ {msg}  (ok={ok_count}, fail={fail_count})")
             # Na 3 opeenvolgende fouten: waarschuwing
             if fail_count > 0 and fail_count % 3 == 0:
-                print(f"          ⚠ Server reageert niet — is de MCP server nog actief?")
+                print("          ⚠ Server reageert niet — is de MCP server nog actief?")
 
         try:
             time.sleep(args.interval)
