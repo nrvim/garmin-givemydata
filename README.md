@@ -376,7 +376,14 @@ garmin-givemydata/
 │   ├── client.py               #   GarminClient (login, fetch, export)
 │   └── endpoints.py            #   API endpoint definitions
 ├── garmin_mcp/                 # MCP server + database layer
-│   ├── db.py                   #   SQLite schema (48 tables), upsert helpers
+│   ├── db/                     #   SQLite layer (package; `garmin_mcp.db` API unchanged)
+│   │   ├── connection.py       #     DB_PATH, get_connection, query, query_readonly
+│   │   ├── schema.py           #     CREATE TABLE/INDEX schema (48 tables)
+│   │   ├── migrations.py       #     idempotent migrate_* for older databases
+│   │   ├── backfill.py         #     conditional data repairs/backfills
+│   │   ├── bootstrap.py        #     init_db: schema → migrations → backfills
+│   │   ├── upserts/            #     upsert helpers: daily, activities, fitness, profile
+│   │   └── routing.py          #     save_to_db: endpoint → upsert router
 │   ├── server.py               #   FastMCP server with 45 tools
 │   ├── export.py               #   CSV, JSON, GPX, TCX export
 │   ├── import_json.py          #   JSON → SQLite bulk import
