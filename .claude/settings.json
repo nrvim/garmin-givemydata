@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tools/graphify/graphify-safe.sh *)"
+    ],
+    "deny": [
+      "Bash(graphify *)",
+      "Bash(graphify-mcp*)",
+      "Bash(.graphify-venv/bin/graphify*)",
+      "Bash(uvx graphify*)",
+      "Bash(pipx run graphify*)",
+      "Bash(pip install graphify*)",
+      "Bash(uv tool install graphify*)",
+      "Bash(pipx install graphify*)"
+    ]
+  }
+}

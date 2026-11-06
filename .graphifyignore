@@ -1,0 +1,28 @@
+# graphify: extra excludes on top of .gitignore (this file can only exclude more).
+# Secrets, sessions and personal health data must never be indexed.
+.env
+.env.*
+!.env.example
+*session*.json
+garmin_data_for_ai.json
+*.db
+*.db-*
+*.sqlite
+*.fit
+fit/
+export_test/
+downloaded_files/
+browser_profile*/
+debug/
+*.log
+*.bak
+
+# Tooling and environments
+venv/
+.venv/
+.graphify-venv/
+graphify-out/
+.claude/
+.codex/
+.mcp.json
+get-pip.py

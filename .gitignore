@@ -26,3 +26,7 @@ garmin_session.json
 .codex/
 downloaded_files/
 *.deb
+
+# graphify (safe, code-only) — local tool and output
+.graphify-venv/
+graphify-out/
