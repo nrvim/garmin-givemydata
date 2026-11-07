@@ -8,12 +8,35 @@ Zie [SECURITY.md](SECURITY.md) voor de audit van het origineel, de maatregelen, 
 
 ## Installeren
 
-Vereist: Claude Code en Node.js 22.13 of nieuwer (`node -v`).
+Vereist: Claude Code en Node.js 22.13 of nieuwer (`node -v`). De Claude-app levert zelf geen `node` mee: zonder Node draaien de hooks niet en blijft bijvoorbeeld `/ponytail status` zonder antwoord.
 
 ```
 /plugin marketplace add StephanH76/garmin-givemydata
 /plugin install ponytail-safe@ponytail-safe
 ```
+
+### Node.js installeren
+
+- **macOS / Linux:** via https://nodejs.org (LTS), Homebrew (`brew install node`) of je pakketbeheerder.
+- **Windows met adminrechten:** `winget install OpenJS.NodeJS.LTS`
+- **Windows zonder adminrechten:** pak de zip-versie uit in je gebruikersmap en zet die in je eigen PATH. Controleer eerst of je werkgever dat toestaat. In PowerShell, zonder admin:
+
+  ```powershell
+  $v = "v26.13.0"   # of de nieuwste LTS van https://nodejs.org
+  $dir = "$env:LOCALAPPDATA\Programs\node"
+  $zip = "$env:TEMP\node-$v-win-x64.zip"
+  Invoke-WebRequest -UseBasicParsing "https://nodejs.org/dist/$v/node-$v-win-x64.zip" -OutFile $zip
+  $expected = ((Invoke-WebRequest -UseBasicParsing "https://nodejs.org/dist/$v/SHASUMS256.txt").Content -split "`n" | Where-Object { $_ -match "node-$v-win-x64.zip" }).Split(" ")[0]
+  if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $expected.ToUpper()) { throw "Hash klopt niet, niet installeren" }
+  Expand-Archive $zip -DestinationPath $dir -Force
+  [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$dir\node-$v-win-x64", "User")
+  ```
+
+Sluit daarna je terminal en de Claude-app helemaal af (ook in het systeemvak), open ze opnieuw en controleer `node -v`.
+
+### Werkt het niet?
+
+Geeft `/ponytail status` geen dashboard, controleer dan eerst `node -v` (22.13 of nieuwer). Is dat in orde, start Claude Code dan met `claude --debug` en zoek in de uitvoer naar regels met `hook` of `ponytail`.
 
 In deze repo staat Ponytail Safe al aan via `.claude/settings.json`: Claude Code vraagt bij het openen van de repo of je de marketplace vertrouwt en installeert de plug-in daarna.
 
