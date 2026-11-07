@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { ROOT, HOOKS, sandbox, runHook, prompt, tree, changed, writeTranscript, commandFor } = require('./helpers');
+const { ROOT, HOOKS, sandbox, runHook, prompt, tree, changed, writeTranscript, flagsIn } = require('./helpers');
 
 const RUNTIME_FILES = ['lib.js', 'map.js', 'session-start.js', 'prompt.js', 'subagent.js', 'stop.js', 'guard.js'].map((f) => path.join(ROOT, 'hooks', f));
 const noTripwire = (r) => assert.ok(!/TRIPWIRE:/.test(r.stderr), 'network/subprocess attempt: ' + r.stderr);
@@ -18,6 +18,7 @@ test('runtime code requires only fs, path, os, crypto, string_decoder and its ow
   const allowed = new Set(['fs', 'path', 'os', 'crypto', 'string_decoder', './lib', './map']);
   for (const file of RUNTIME_FILES) {
     const src = fs.readFileSync(file, 'utf8');
+    assert.ok(!/process\.execArgv\s*=|process\.permission\s*=/.test(src), `${path.basename(file)} tampers with the sandbox`);
     for (const m of src.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)) assert.ok(allowed.has(m[1]), `${path.basename(file)} requires ${m[1]}`);
     assert.equal((src.match(/require\(/g) || []).length, [...src.matchAll(/require\(\s*['"][^'"]+['"]\s*\)/g)].length, `${path.basename(file)}: dynamic require`);
     for (const bad of [/\bfetch\s*\(/, /\beval\s*\(/, /new\s+Function\b/, /\bimport\s*\(/, /process\.binding/, /WebSocket/, /child_process/, /\bvm\b\./, /worker_threads/]) {
@@ -26,21 +27,45 @@ test('runtime code requires only fs, path, os, crypto, string_decoder and its ow
   }
 });
 
-test('every hook runs sandboxed: node --permission, no subprocess/worker/addon grants, writes only to its own folder', () => {
+test('the launcher only starts this Node binary, sandboxed, with a fixed hook script', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'hooks', 'launch.js'), 'utf8');
+  const requires = [...src.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]).sort();
+  assert.deepEqual(requires, ['./lib', 'child_process', 'path']);
+  assert.equal((src.match(/spawnSync\(/g) || []).length, 1, 'exactly one spawn');
+  assert.match(src, /spawnSync\(process\.execPath, \[\.\.\.run\.flags, run\.script\]/);
+  assert.ok(!/process\.stdin|shell\s*:/.test(src), 'the launcher must not read hook input or use a shell');
+  for (const bad of [/\bfetch\s*\(/, /\beval\s*\(/, /new\s+Function\b/, /\bimport\s*\(/, /\bexec(Sync|File)?\s*\(/, /\bfork\s*\(/, /\bspawn\s*\(/]) assert.ok(!bad.test(src), 'launch.js contains ' + bad);
+});
+
+test('every hook runs sandboxed: no shell paths, no subprocess/worker/addon grants, writes only to its own folder', () => {
+  const sb = sandbox();
   const scripts = new Set(fs.readdirSync(path.join(ROOT, 'hooks')));
+  const flags = flagsIn(sb);
+  const names = new Set();
   for (const [event, groups] of Object.entries(HOOKS)) {
     for (const g of groups) for (const h of g.hooks) {
       assert.equal(h.type, 'command');
-      assert.match(h.command, /^node --permission /, event);
-      assert.ok(!/--allow-(child-process|worker|addons|wasi)/.test(h.command), event + ' grants too much');
-      for (const w of h.command.matchAll(/--allow-fs-write="([^"]+)"/g)) assert.equal(w[1], '${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*', event);
-      assert.ok(!/[;&|`]|\$\(/.test(h.command), event + ' chains shell commands');
-      const script = h.command.match(/\/hooks\/([\w-]+\.js)"$/);
-      assert.ok(script && scripts.has(script[1]), event + ' runs an unknown script');
+      // Only Claude Code's own ${CLAUDE_PLUGIN_ROOT}: no shell variable, so bash, PowerShell and cmd agree.
+      const m = h.command.match(/^node "\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/launch\.js" ([a-z-]+)$/);
+      assert.ok(m, event + ': unexpected command ' + h.command);
+      names.add(m[1]);
     }
   }
-  assert.ok(!/--allow-fs-read=\S*projects/.test(commandFor('SessionStart')), 'SessionStart must not read transcripts');
-  assert.ok(!/--allow-fs-(read|write)=\S*(projects|ponytail-safe)/.test(commandFor('PreToolUse')), 'guard must read nothing but the plugin');
+  for (const name of names) {
+    const f = flags[name];
+    assert.ok(f, 'launcher does not know ' + name);
+    assert.equal(f.flags[0], '--permission', name);
+    assert.ok(scripts.has(path.basename(f.script)) && path.dirname(f.script) === path.join(ROOT, 'hooks'), name + ' runs an unknown script');
+    assert.ok(!f.flags.some((x) => /--allow-(child-process|worker|addons|wasi)/.test(x)), name + ' grants too much');
+    for (const w of f.flags.filter((x) => x.startsWith('--allow-fs-write='))) assert.equal(w, '--allow-fs-write=' + path.join(sb.data, '*'), name);
+    for (const r of f.flags.filter((x) => x.startsWith('--allow-fs-read='))) {
+      assert.ok([ROOT, sb.data, sb.project, path.join(sb.home, '.claude', 'projects')].map((d) => '--allow-fs-read=' + path.join(d, '*')).includes(r), name + ' reads ' + r);
+    }
+  }
+  const reads = (n) => flags[n].flags.filter((x) => x.startsWith('--allow-fs-read=')).join(' ');
+  assert.ok(!reads('session-start').includes('projects'), 'SessionStart must not read transcripts');
+  assert.deepEqual(flags.guard.flags, ['--permission', '--allow-fs-read=' + path.join(ROOT, '*')], 'guard must read nothing but the plugin');
+  assert.ok(!flags.subagent.flags.some((x) => x.startsWith('--allow-fs-write')), 'subagent must not write');
 });
 
 test('plugin ships no install scripts, dependencies or binaries', () => {
@@ -57,10 +82,17 @@ test('control: the production sandbox flags block reading outside the allowed fo
   const probe = path.join(ROOT, 'tests', 'probe-read.js');
   fs.writeFileSync(probe, `try { require('fs').readFileSync(process.argv[2]); console.log('READ') } catch (e) { console.log(e.code) }`);
   try {
-    const cmd = commandFor('Stop').replace(/"\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/stop\.js"$/, `"${probe}" "${path.join(sb.base, 'outside-secret.txt')}"`);
-    const r = spawnSync('bash', ['-c', cmd], { env: { PATH: process.env.PATH, HOME: sb.home, CLAUDE_PLUGIN_ROOT: ROOT }, encoding: 'utf8' });
-    assert.equal(r.stdout.trim(), 'ERR_ACCESS_DENIED');
+    for (const name of ['stop', 'prompt', 'session-start', 'guard']) {
+      const r = spawnSync(process.execPath, [...flagsIn(sb)[name].flags, probe, path.join(sb.base, 'outside-secret.txt')], { encoding: 'utf8' });
+      assert.equal(r.stdout.trim(), 'ERR_ACCESS_DENIED', name);
+    }
   } finally { fs.unlinkSync(probe); }
+});
+
+test('control: the sandboxed hook cannot start a subprocess, even without the tripwire', () => {
+  const sb = sandbox();
+  const r = spawnSync(process.execPath, [...flagsIn(sb).stop.flags, '-e', "try{require('child_process').execSync('echo hi');console.log('RAN')}catch(e){console.log(e.code)}"], { encoding: 'utf8' });
+  assert.equal(r.stdout.trim(), 'ERR_ACCESS_DENIED');
 });
 
 test('control: the tripwire catches a network attempt', () => {
@@ -294,4 +326,37 @@ test('defence in depth: the code refuses outside and symlinked transcripts even 
     assert.equal(lib.safeTranscript(path.join(sb.transcripts, 'ok.txt')), null);
     assert.equal(lib.safeTranscript(inside), inside);
   } finally { process.env.HOME = saved; }
+});
+
+test('doctor shows what the sandbox allows; a failed save is reported, not silent', () => {
+  const sb = sandbox();
+  const d = prompt(sb, '/ponytail doctor');
+  noTripwire(d);
+  assert.match(d.context, /PONYTAIL SAFE DOCTOR/);
+  assert.match(d.context, /sandbox on/);
+  assert.match(d.context, /may write\s+yes/);
+  assert.ok(d.context.includes(sb.data));
+  // Without the launcher the hook runs unsandboxed, and doctor must say so.
+  const raw = spawnSync(process.execPath, [path.join(ROOT, 'hooks', 'prompt.js')],
+    { input: JSON.stringify({ prompt: '/ponytail doctor' }), env: { PATH: process.env.PATH, HOME: sb.home }, encoding: 'utf8' });
+  assert.match(JSON.parse(raw.stdout).hookSpecificOutput.additionalContext, /sandbox OFF/);
+  // Make saving impossible: a file where the data folder should be.
+  fs.writeFileSync(sb.data, 'not a folder');
+  const r = prompt(sb, '/ponytail level controlled');
+  noTripwire(r);
+  assert.match(r.context, /the command failed \((ENOTDIR|EEXIST)/);
+  assert.match(r.context, /ponytail doctor/);
+});
+
+test('works without a shell and with a data path full of spaces and shell characters', () => {
+  const sb = sandbox();
+  const odd = path.join(sb.base, 'my $HOME (copy) & more');
+  const env = { PATH: process.env.PATH, HOME: sb.home, XDG_CONFIG_HOME: odd, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PROJECT_DIR: sb.project };
+  const run = (text) => spawnSync(process.execPath, [path.join(ROOT, 'hooks', 'launch.js'), 'prompt'],
+    { input: JSON.stringify({ prompt: text, cwd: sb.project }), env, encoding: 'utf8' });
+  const r = run('/ponytail level controlled');
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(JSON.parse(r.stdout).hookSpecificOutput.additionalContext, /level changed from safe to controlled/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(odd, 'ponytail-safe', 'config.json'), 'utf8')).level, 'controlled');
+  assert.match(JSON.parse(run('/ponytail status').stdout).hookSpecificOutput.additionalContext, /level controlled/);
 });

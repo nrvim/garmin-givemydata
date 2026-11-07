@@ -37,6 +37,7 @@ Only a prompt you type yourself can change a level or a permission.
 | Command | What it does |
 |---------|--------------|
 | `/ponytail status` | Dashboard: level, features, cost, tokens and turns per project. |
+| `/ponytail doctor` | What the sandbox lets the hooks read and write, to check an install. |
 | `/ponytail import` | Dry run: counts past session transcripts, reads none. `/ponytail import apply` imports. |
 | `/ponytail-review` | Quality review of a diff: bugs, security, load, missing tests, what to cut. |
 | `/ponytail-audit` | The same review for a whole repo, ranked. |

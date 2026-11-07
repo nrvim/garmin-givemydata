@@ -6,7 +6,7 @@ description: >
   fixing, refactoring, reviewing, choosing dependencies) and when the user says
   "ponytail", "be lazy", "simplest solution", "yagni", or complains about
   over-engineering or bloat. Levels: lite, full (default), ultra.
-argument-hint: "[lite|full|ultra|off|status|help|level <l>|allow <f>|deny <f>|default <m>|import]"
+argument-hint: "[lite|full|ultra|off|status|doctor|help|level <l>|allow <f>|deny <f>|default <m>|import]"
 license: MIT
 ---
 
