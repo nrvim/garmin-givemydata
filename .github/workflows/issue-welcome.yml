@@ -49,7 +49,7 @@ jobs:
               response += `- \`garmin_client/client.py\` — browser automation and login\n`;
               response += `- \`garmin_client/endpoints.py\` — API endpoint definitions\n`;
               response += `- \`garmin_mcp/db/\` — database schema, migrations and upsert logic\n`;
-              response += `- \`garmin_mcp/server.py\` — MCP server tools\n\n`;
+              response += `- \`garmin_mcp/tools/\` — MCP server tools (registered in \`garmin_mcp/server.py\`)\n\n`;
             }
 
             if (!hasError && !wantsToContribute) {

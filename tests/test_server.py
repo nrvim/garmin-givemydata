@@ -108,7 +108,7 @@ class TestBackgroundSync(unittest.TestCase):
             return {"status": "ok"}
 
         with (
-            patch("garmin_mcp.server.SYNC_TIMEOUT_SEC", 0.2),
+            patch("garmin_mcp.tools.background_sync.SYNC_TIMEOUT_SEC", 0.2),
             patch("garmin_mcp.sync.incremental_sync", hangs),
         ):
             server._start_background_sync()
@@ -129,7 +129,7 @@ class TestBackgroundSync(unittest.TestCase):
             def start(self):
                 raise RuntimeError("simulated: can't start new thread")
 
-        with patch("garmin_mcp.server.threading.Thread", FailingThread):
+        with patch("garmin_mcp.tools.background_sync.threading.Thread", FailingThread):
             result = server._start_background_sync()
 
         self.assertEqual(result["status"], "error")
