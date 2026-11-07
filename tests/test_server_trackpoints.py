@@ -17,7 +17,7 @@ def _open_conn(db_path: str) -> sqlite3.Connection:
 def _call(db_path: str, activity_id: int, limit: int = 500, offset: int = 0) -> dict:
     """Invoke the underlying function (FastMCP wraps it as a tool)."""
     fn = garmin_activity_trackpoints.fn if hasattr(garmin_activity_trackpoints, "fn") else garmin_activity_trackpoints
-    with patch("garmin_mcp.server.get_connection", lambda: _open_conn(db_path)):
+    with patch("garmin_mcp.tools.activities.get_connection", lambda: _open_conn(db_path)):
         return json.loads(fn(activity_id, limit=limit, offset=offset))
 
 
