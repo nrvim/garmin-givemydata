@@ -38,6 +38,34 @@ Sluit daarna je terminal en de Claude-app helemaal af (ook in het systeemvak), o
 
 Geeft `/ponytail status` geen dashboard, controleer dan eerst `node -v` (22.13 of nieuwer). Typ daarna `/ponytail doctor`: dat laat zien of de sandbox aanstaat en of de hook je datamap mag lezen en schrijven. Helpt dat niet, start Claude Code dan met `claude --debug` en zoek naar regels met `ponytail-safe:`.
 
+Kent `/ponytail doctor` het commando niet, dan draai je nog een oude versie; zie hieronder.
+
+### Bijwerken
+
+`/reload-plugins` laadt alleen de versie die al gedownload is; een nieuwe versie haal je zo op.
+
+- **Claude Code in de terminal:**
+
+  ```
+  claude plugin marketplace update ponytail-safe
+  claude plugin update ponytail-safe@ponytail-safe
+  ```
+
+- **Claude desktop-app** (heeft geen update-knop, ook niet onder *Manage*):
+  1. Verwijder de plug-in: *Settings → Customize → Plugins → Ponytail safe → ⋯ → Remove*.
+  2. Sluit de app helemaal af, ook in het systeemvak.
+  3. Verwijder de oude gedownloade kopieën. Je instellingen in `~/.config/ponytail-safe` blijven staan.
+
+     ```powershell
+     Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\plugins\cache\ponytail-safe" -ErrorAction SilentlyContinue
+     Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\plugins\marketplaces\ponytail-safe" -ErrorAction SilentlyContinue
+     ```
+
+     Op macOS of Linux: `rm -rf ~/.claude/plugins/cache/ponytail-safe ~/.claude/plugins/marketplaces/ponytail-safe`
+  4. Open de app en typ in een **lokale** sessie, dus niet in een cloudsessie, `/plugin marketplace add StephanH76/garmin-givemydata`. Installeer daarna "Ponytail safe" opnieuw.
+
+Controleer de versie in de map `~/.claude/plugins/cache/ponytail-safe/ponytail-safe/`. Die moet overeenkomen met `version` in `.claude-plugin/plugin.json`. Daarna laat `/ponytail doctor` zien of alles werkt.
+
 In deze repo staat Ponytail Safe al aan via `.claude/settings.json`: Claude Code vraagt bij het openen van de repo of je de marketplace vertrouwt en installeert de plug-in daarna.
 
 Eerst proberen zonder te installeren, alleen voor één sessie:
