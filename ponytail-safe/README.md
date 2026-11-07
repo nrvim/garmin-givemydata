@@ -15,6 +15,8 @@ Vereist: Claude Code en Node.js 22.13 of nieuwer (`node -v`).
 /plugin install ponytail-safe@ponytail-safe
 ```
 
+In deze repo staat Ponytail Safe al aan via `.claude/settings.json`: Claude Code vraagt bij het openen van de repo of je de marketplace vertrouwt en installeert de plug-in daarna.
+
 Eerst proberen zonder te installeren, alleen voor één sessie:
 
 ```

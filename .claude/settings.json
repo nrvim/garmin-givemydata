@@ -13,5 +13,16 @@
       "Bash(uv tool install graphify*)",
       "Bash(pipx install graphify*)"
     ]
+  },
+  "extraKnownMarketplaces": {
+    "ponytail-safe": {
+      "source": {
+        "source": "github",
+        "repo": "StephanH76/garmin-givemydata"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "ponytail-safe@ponytail-safe": true
   }
 }
