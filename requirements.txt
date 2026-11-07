@@ -1,6 +1,6 @@
 seleniumbase>=4.30
 httpx>=0.25
-mcp[cli]>=1.0
+mcp[cli]>=2,<3
 fitparse>=1.2.0
 fastapi
 uvicorn

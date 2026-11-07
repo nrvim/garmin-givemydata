@@ -45,9 +45,7 @@ TOKENS = load_tokens()
 def start_mcp():
     from garmin_mcp.server import mcp
 
-    mcp.settings.host = "127.0.0.1"
-    mcp.settings.port = 8001
-    mcp.run(transport="sse")
+    mcp.run(transport="sse", host="127.0.0.1", port=8001)
 
 
 threading.Thread(target=start_mcp, daemon=True).start()
