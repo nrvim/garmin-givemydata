@@ -1,6 +1,7 @@
 """Training load/status, performance metrics and body composition."""
 
 import json
+from contextlib import closing
 from datetime import date, timedelta
 
 from ..db import get_connection, query
@@ -16,8 +17,7 @@ def garmin_training_load() -> str:
     - Weekly volume summary (hours, km, sessions, load)
     - Training load distribution by sport
     """
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         activities = query(
             conn,
             """SELECT DATE(start_time_local) AS activity_date,
@@ -119,8 +119,6 @@ def garmin_training_load() -> str:
             "load_by_sport": by_sport,
         }
         return json.dumps(result, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_fitness_age(period: str = "month") -> str:
@@ -135,8 +133,7 @@ def garmin_fitness_age(period: str = "month") -> str:
 
     group_expr = "strftime('%Y-W%W', calendar_date)" if period == "week" else "strftime('%Y-%m', calendar_date)"
 
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             f"""SELECT {group_expr} AS period,
@@ -168,14 +165,11 @@ def garmin_fitness_age(period: str = "month") -> str:
             "timeline": rows,
         }
         return json.dumps(result, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_body_composition() -> str:
     """Weight, BMI, and body composition history with trend analysis."""
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT timestamp,
@@ -202,8 +196,6 @@ def garmin_body_composition() -> str:
             "history": rows,
         }
         return json.dumps(result, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_recovery(days_after: int = 3) -> str:
@@ -215,8 +207,7 @@ def garmin_recovery(days_after: int = 3) -> str:
 
     This is unique — no other Garmin MCP computes recovery signatures.
     """
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         activities = query(
             conn,
             """SELECT activity_id, activity_name, activity_type,
@@ -295,8 +286,6 @@ def garmin_recovery(days_after: int = 3) -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_training_status(days: int = 90) -> str:
@@ -307,8 +296,7 @@ def garmin_training_status(days: int = 90) -> str:
     transitions happened. Useful for spotting detraining before it deepens.
     """
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date, status, acute_load, chronic_load
@@ -345,8 +333,6 @@ def garmin_training_status(days: int = 90) -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_blood_pressure(days: int = 90) -> str:
@@ -356,8 +342,7 @@ def garmin_blood_pressure(days: int = 90) -> str:
     outside normal ranges (>140/90 mmHg per AHA guidelines).
     """
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date, systolic, diastolic, pulse
@@ -381,8 +366,6 @@ def garmin_blood_pressure(days: int = 90) -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_race_predictions(days: int = 30) -> str:
@@ -392,8 +375,7 @@ def garmin_race_predictions(days: int = 30) -> str:
     A rising prediction time means declining fitness; falling means improving.
     """
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date, time_5k, time_10k,
@@ -444,15 +426,12 @@ def garmin_race_predictions(days: int = 30) -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_endurance_score(days: int = 30) -> str:
     """Endurance score and VO2max with classification and trend."""
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date, overall_score, classification,
@@ -480,15 +459,12 @@ def garmin_endurance_score(days: int = 30) -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_hill_score(days: int = 30) -> str:
     """Hill score with endurance and strength sub-scores."""
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date, overall_score,
@@ -507,8 +483,6 @@ def garmin_hill_score(days: int = 30) -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_vo2max() -> str:
@@ -517,8 +491,7 @@ def garmin_vo2max() -> str:
     Pulls from both the activity-level VO2max estimates and the
     standalone vo2max tracking table.
     """
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         # Dedicated table
         vo2_table = query(
             conn,
@@ -547,8 +520,6 @@ def garmin_vo2max() -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_load_focus(days: int = 28) -> str:
@@ -559,8 +530,7 @@ def garmin_load_focus(days: int = 28) -> str:
     distribution is optimal.
     """
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date, anaerobic, high_aerobic, low_aerobic, focus_status
@@ -578,8 +548,6 @@ def garmin_load_focus(days: int = 28) -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_lactate_threshold() -> str:
@@ -588,8 +556,7 @@ def garmin_lactate_threshold() -> str:
     The lactate threshold is the highest intensity you can sustain aerobically.
     Used to set training zones and pace targets for races.
     """
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date, speed, heart_rate,
@@ -606,5 +573,3 @@ def garmin_lactate_threshold() -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()

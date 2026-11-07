@@ -1,14 +1,14 @@
 """Devices, gear, workouts, badges, goals, challenges, user profile and HR zones."""
 
 import json
+from contextlib import closing
 
 from ..db import get_connection, query
 
 
 def garmin_devices() -> str:
     """Connected Garmin devices with type and last sync time."""
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT device_id, display_name, device_type, application_key,
@@ -16,8 +16,6 @@ def garmin_devices() -> str:
                FROM device ORDER BY last_sync DESC""",
         )
         return json.dumps(rows, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_workouts() -> str:
@@ -26,8 +24,7 @@ def garmin_workouts() -> str:
     Returns saved workouts (training plans, custom workouts) and any
     scheduled workout dates. Useful for understanding planned vs executed training.
     """
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         workouts = query(
             conn,
             """SELECT workout_id, workout_name, sport_type,
@@ -57,8 +54,6 @@ def garmin_workouts() -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_badges() -> str:
@@ -67,8 +62,7 @@ def garmin_badges() -> str:
     Tracks milestones like distance PRs, consistency streaks, and
     special event completions. Shows progression over time.
     """
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT badge_name, badge_category, earned_date, earned_number
@@ -93,14 +87,11 @@ def garmin_badges() -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_goals() -> str:
     """Active fitness goals and their current progress."""
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT goal_id, goal_type, goal_value, raw_json
@@ -115,14 +106,11 @@ def garmin_goals() -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_challenges() -> str:
     """Garmin Connect challenges (active and completed)."""
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT id, challenge_type, raw_json
@@ -137,14 +125,11 @@ def garmin_challenges() -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_user_profile() -> str:
     """User profile and settings stored in Garmin Connect."""
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(conn, "SELECT key, raw_json FROM user_profile")
         result = {}
         for r in rows:
@@ -153,14 +138,11 @@ def garmin_user_profile() -> str:
             except (json.JSONDecodeError, TypeError):
                 result[r["key"]] = r["raw_json"]
         return json.dumps(result, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_gear() -> str:
     """Tracked gear/equipment (shoes, bikes, etc) with usage stats."""
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT gear_id, gear_type, display_name,
@@ -178,14 +160,11 @@ def garmin_gear() -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_hr_zones() -> str:
     """Heart rate zone definitions configured in your Garmin profile."""
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(conn, "SELECT id, raw_json FROM hr_zones")
         parsed = []
         for r in rows:
@@ -197,5 +176,3 @@ def garmin_hr_zones() -> str:
                     entry["zones"] = r["raw_json"]
             parsed.append(entry)
         return json.dumps(parsed, indent=2, default=str)
-    finally:
-        conn.close()

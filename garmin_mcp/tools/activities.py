@@ -1,6 +1,7 @@
 """Activities, activity details, GPS trackpoints, activity types and personal records."""
 
 import json
+from contextlib import closing
 
 from ..db import get_connection, query
 
@@ -51,14 +52,12 @@ def garmin_activities(
         LIMIT ?
     """
 
-    conn = get_connection()
-    try:
-        rows = query(conn, sql, params)
-        return json.dumps(rows, indent=2, default=str)
-    except Exception as exc:
-        return json.dumps({"error": str(exc)})
-    finally:
-        conn.close()
+    with closing(get_connection()) as conn:
+        try:
+            rows = query(conn, sql, params)
+            return json.dumps(rows, indent=2, default=str)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
 
 
 def garmin_activity_detail(activity_id: int = 0, last: bool = False) -> str:
@@ -68,8 +67,7 @@ def garmin_activity_detail(activity_id: int = 0, last: bool = False) -> str:
     Returns the activity summary plus splits, HR zones, weather, and
     exercise sets (if available).
     """
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         if last or activity_id == 0:
             rows = query(conn, "SELECT activity_id FROM activity ORDER BY start_time_local DESC LIMIT 1")
             if not rows:
@@ -184,8 +182,6 @@ def garmin_activity_detail(activity_id: int = 0, last: bool = False) -> str:
             "running_dynamics": dynamics[0] if dynamics else {},
         }
         return json.dumps(result, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_activity_trackpoints(activity_id: int, limit: int = 500, offset: int = 0) -> str:
@@ -200,8 +196,7 @@ def garmin_activity_trackpoints(activity_id: int, limit: int = 500, offset: int 
     pacing analysis, climb segmentation. For aggregate stats (splits, zones,
     weather), prefer garmin_activity_detail — much smaller output.
     """
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         total_row = query(
             conn,
             "SELECT COUNT(*) AS n FROM activity_trackpoints WHERE activity_id = ?",
@@ -242,14 +237,11 @@ def garmin_activity_trackpoints(activity_id: int, limit: int = 500, offset: int 
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_records() -> str:
     """All personal records (PRs) with activity details and dates."""
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT pr.display_name AS activity,
@@ -292,14 +284,11 @@ def garmin_records() -> str:
             r["record_name"] = pr_names.get(code, f"Type {code}")
 
         return json.dumps(rows, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_activity_types() -> str:
     """All Garmin activity type definitions with IDs and parent categories."""
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT type_id, type_key, parent_type_id
@@ -307,5 +296,3 @@ def garmin_activity_types() -> str:
                ORDER BY type_key""",
         )
         return json.dumps(rows, indent=2, default=str)
-    finally:
-        conn.close()
