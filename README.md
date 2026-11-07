@@ -384,7 +384,7 @@ garmin-givemydata/
 │   │   ├── bootstrap.py        #     init_db: schema → pending migrations (PRAGMA user_version) → backfills
 │   │   ├── upserts/            #     upsert helpers: daily, activities, fitness, profile
 │   │   └── routing.py          #     save_to_db: endpoint → upsert router
-│   ├── server.py               #   FastMCP server: registers 48 tools (TOOLS), main()
+│   ├── server.py               #   MCP server (MCPServer): registers 48 tools (TOOLS), main()
 │   ├── tools/                  #   MCP tool implementations by domain:
 │   │                           #     core, summary, daily, activities, fitness, profile, background_sync
 │   ├── export.py               #   CSV, JSON, GPX, TCX export

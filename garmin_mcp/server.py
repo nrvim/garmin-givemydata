@@ -1,14 +1,14 @@
 """
-Garmin MCP server — exposes health and activity data via FastMCP tools.
+Garmin MCP server — exposes health and activity data as MCP tools.
 
 The tool implementations live in ``garmin_mcp.tools``; this module creates the
-FastMCP instance, prepares the database and registers every tool in ``TOOLS``.
+MCPServer instance (mcp 2.x), prepares the database and registers every tool in ``TOOLS``.
 Tool names, descriptions and parameters come from the functions themselves.
 """
 
 import logging
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from .db import get_connection, init_db
 from .tools import activities, background_sync, core, daily, fitness, profile, summary
@@ -83,7 +83,7 @@ from .tools.summary import (  # noqa: F401  (re-exported for existing imports)
 
 log = logging.getLogger(__name__)
 
-mcp = FastMCP("garmin")
+mcp = MCPServer("garmin")
 
 # Ensure all tables exist on startup
 _conn = get_connection()
