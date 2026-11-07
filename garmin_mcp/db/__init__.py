@@ -14,7 +14,11 @@ from .backfill import (  # noqa: F401
     cleanup_invalid_rows,
 )
 from .bootstrap import (  # noqa: F401
+    MIGRATIONS,
+    SCHEMA_VERSION,
+    get_schema_version,
     init_db,
+    run_migrations,
 )
 from .connection import (  # noqa: F401
     DB_PATH,

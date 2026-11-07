@@ -381,7 +381,7 @@ garmin-givemydata/
 │   │   ├── schema.py           #     CREATE TABLE/INDEX schema (48 tables)
 │   │   ├── migrations.py       #     idempotent migrate_* for older databases
 │   │   ├── backfill.py         #     conditional data repairs/backfills
-│   │   ├── bootstrap.py        #     init_db: schema → migrations → backfills
+│   │   ├── bootstrap.py        #     init_db: schema → pending migrations (PRAGMA user_version) → backfills
 │   │   ├── upserts/            #     upsert helpers: daily, activities, fitness, profile
 │   │   └── routing.py          #     save_to_db: endpoint → upsert router
 │   ├── server.py               #   FastMCP server with 45 tools
