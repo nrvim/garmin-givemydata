@@ -1,6 +1,25 @@
-"""init_db(): create schema, run migrations, then conditional backfills."""
+"""init_db(): create schema, run pending migrations, then conditional backfills.
 
+Schema versioning
+-----------------
+``PRAGMA user_version`` records how many entries of ``MIGRATIONS`` have been
+applied to a database. ``init_db`` runs only the entries that are still pending,
+so a database that is up to date skips all migration work on startup.
+
+Databases created before versioning existed have ``user_version = 0`` and run
+every migration once, exactly as ``init_db`` always did. All migrations are
+idempotent, so resetting with ``PRAGMA user_version = 0`` is always safe.
+
+Rules for changing ``MIGRATIONS``:
+  * only ever append; never reorder, remove or replace an existing entry;
+  * each new migration must be idempotent (safe on fresh and on old schemas);
+  * a migration only has to repair rows written by *older* code: rows written
+    afterwards come from the current upserts, which already fill new columns.
+"""
+
+import logging
 import sqlite3
+from typing import Callable
 
 from .backfill import (
     backfill_body_battery_from_daily_summaries,
@@ -33,31 +52,73 @@ from .migrations import (
 )
 from .schema import _SCHEMA_SQL
 
+# Keep the original logger name so existing logging config still applies.
+log = logging.getLogger("garmin_mcp.db")
+
+# Ordered migrations; schema version N means MIGRATIONS[:N] have been applied.
+# APPEND ONLY — see the module docstring.
+MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
+    migrate_weight_table,  # 1
+    migrate_device_table,  # 2
+    migrate_training_status_table,  # 3
+    migrate_activity_splits_table,  # 4
+    migrate_activity_splits_v2,  # 5
+    migrate_hrv_table,  # 6
+    migrate_sleep_table,  # 7
+    migrate_heart_rate_table,  # 8
+    migrate_spo2_table,  # 9
+    migrate_respiration_table,  # 10
+    migrate_hydration_table,  # 11
+    migrate_weight_table_v2,  # 12
+    migrate_endurance_score_table,  # 13
+    migrate_hill_score_table,  # 14
+    migrate_gear_table,  # 15
+    migrate_gear_table_v2,  # 16
+    migrate_hollow_tables,  # 17
+    migrate_sleep_table_v2,  # 18
+    migrate_fitness_age_table,  # 19
+    migrate_weight_table_v3,  # 20
+    migrate_activity_table,  # 21
+)
+
+SCHEMA_VERSION = len(MIGRATIONS)
+
+
+def get_schema_version(conn: sqlite3.Connection) -> int:
+    """Return the number of MIGRATIONS applied to this database (PRAGMA user_version)."""
+    return conn.execute("PRAGMA user_version").fetchone()[0]
+
+
+def run_migrations(conn: sqlite3.Connection) -> int:
+    """Apply pending MIGRATIONS in order and return how many were applied.
+
+    The version is bumped and committed after each migration, so an interrupted
+    run resumes at the first migration that did not complete. A database whose
+    version is newer than this code (written by a later release) is left as is.
+    """
+    current = get_schema_version(conn)
+    if current > SCHEMA_VERSION:
+        log.warning(
+            "Database schema version %d is newer than this code supports (%d); skipping migrations.",
+            current,
+            SCHEMA_VERSION,
+        )
+        return 0
+    for version in range(current + 1, SCHEMA_VERSION + 1):
+        MIGRATIONS[version - 1](conn)
+        # PRAGMA cannot take bound parameters; version is an int from range().
+        conn.execute(f"PRAGMA user_version = {int(version)}")
+        conn.commit()
+    applied = SCHEMA_VERSION - current
+    if applied:
+        log.info("Applied %d schema migration(s): version %d -> %d", applied, current, SCHEMA_VERSION)
+    return applied
+
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Create all tables and indexes if they do not already exist."""
+    """Create all tables and indexes if missing, apply pending migrations, run needed backfills."""
     conn.executescript(_SCHEMA_SQL)
-    migrate_weight_table(conn)
-    migrate_device_table(conn)
-    migrate_training_status_table(conn)
-    migrate_activity_splits_table(conn)
-    migrate_activity_splits_v2(conn)
-    migrate_hrv_table(conn)
-    migrate_sleep_table(conn)
-    migrate_heart_rate_table(conn)
-    migrate_spo2_table(conn)
-    migrate_respiration_table(conn)
-    migrate_hydration_table(conn)
-    migrate_weight_table_v2(conn)
-    migrate_endurance_score_table(conn)
-    migrate_hill_score_table(conn)
-    migrate_gear_table(conn)
-    migrate_gear_table_v2(conn)
-    migrate_hollow_tables(conn)
-    migrate_sleep_table_v2(conn)
-    migrate_fitness_age_table(conn)
-    migrate_weight_table_v3(conn)
-    migrate_activity_table(conn)
+    run_migrations(conn)
 
     # Only run cleanup/backfill when there are rows that actually need it.
     needs_cleanup = conn.execute(
