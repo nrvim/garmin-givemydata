@@ -1,6 +1,6 @@
 {
   "name": "ponytail-safe",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Ponytail lazy-senior-dev mode with a security-first runtime: no network, no subprocesses, sandboxed hooks, local-only cost ledger, per-feature consent. Fork of Ponytail 5.3.3 (MIT) by Dietrich Gebert.",
   "author": {
     "name": "Stephan Huijgen"

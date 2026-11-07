@@ -142,7 +142,12 @@ function readInput(fn) {
     done = true;
     let input = {};
     try { input = JSON.parse(data.replace(/^﻿/, '')) || {}; } catch (e) { input = {}; }
-    try { fn(input); } catch (e) { /* fail closed: no output */ }
+    try {
+      fn(input);
+    } catch (e) {
+      // Fail closed (no output to the model), but leave a trace in Claude Code's debug log.
+      try { process.stderr.write(`ponytail-safe: ${path.basename(process.argv[1] || 'hook')} failed: ${e.code || e.name}: ${e.message}\n`); } catch (x) { /* closed */ }
+    }
     process.exit(0);
   };
   process.stdin.on('data', (c) => { data += c; if (data.length > 4 * 1024 * 1024) finish(); });

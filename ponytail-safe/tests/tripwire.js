@@ -9,7 +9,9 @@ patch('https', ['request', 'get', 'createServer']);
 patch('http2', ['connect', 'createServer']);
 patch('dgram', ['createSocket']);
 patch('dns', ['lookup', 'resolve', 'resolve4', 'resolve6']);
-patch('child_process', ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']);
+// hooks/launch.js runs outside the sandbox and must start the sandboxed hook; every hook itself
+// runs with process.permission set, and there any subprocess attempt is a finding.
+if (process.permission) patch('child_process', ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']);
 require('net').Socket.prototype.connect = () => report('net.Socket.connect');
 globalThis.fetch = () => report('fetch');
 globalThis.WebSocket = function () { report('WebSocket'); };

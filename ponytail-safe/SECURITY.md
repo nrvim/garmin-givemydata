@@ -35,8 +35,16 @@ Wel ruim de risico's hieronder. Ernst: H = hoog, M = middel, L = laag.
 | 6 | Er wordt niets in `~/.claude` geschreven en het model krijgt geen opdracht om je instellingen te wijzigen. De statusline is optioneel en stel je zelf in. |
 | 7 | De map staat standaard uit. Hij vraagt niveau `controlled` plus `/ponytail allow map`. Het is een gewone mappenwandeling zonder `git`, met limieten (1500 bestanden, diepte 6, 64 KB per bestand, 1,5 seconde), en slaat verborgen mappen, symlinks en bestanden met *secret*, *credential*, *password*, *token* of *private* in de naam over. Hij weigert je thuismap en `/`. |
 | 9 | `csvField` zet een `'` voor velden die met `= + - @` of een tab/CR beginnen. |
-| 10 | Elke hook draait onder `node --permission` (het permissiemodel van Node) met alleen de mappen die hij nodig heeft. Subprocessen, workers en native addons zijn daardoor op runtime-niveau geblokkeerd. Zie de tabel hieronder. |
+| 10 | Elke hook draait onder `node --permission` (het permissiemodel van Node) met alleen de mappen die hij nodig heeft. Subprocessen, workers en native addons zijn daardoor op runtime-niveau geblokkeerd. Een klein startscript (`launch.js`) berekent die mappen en start de hook in de sandbox; zie hieronder. |
 | 11 | Niveau en toestemming veranderen alleen via een prompt die jij typt en die **in zijn geheel** het commando is. De ruleset verbiedt het model de bestanden aan te raken, en `guard.js` weigert Edit-, Write- en Bash-aanroepen die erin schrijven. |
+
+### Het startscript
+
+Elk hookcommando is alleen `node "${CLAUDE_PLUGIN_ROOT}/hooks/launch.js" <hook>`. Er staat geen shellvariabele in, dus bash, PowerShell en cmd voeren het hetzelfde uit. `launch.js` berekent de toegestane mappen met dezelfde functies die de hooks gebruiken, en start daarna dezelfde Node met `--permission` en een vast script. Zo kunnen sandbox en code nooit naar verschillende mappen wijzen.
+
+Dat is in versie 1.0.0 op Windows wel gebeurd. De oude commando's bouwden de paden in bash-notatie (`${XDG_CONFIG_HOME:-$HOME/.config}`), terwijl de code `C:\Users\...` gebruikte. De schrijfrechten wezen daardoor naar een andere map: lezen faalde stil (daarom werkte `/ponytail status` nog), maar `/ponytail level` en `/ponytail allow` braken af zonder melding.
+
+`launch.js` is de enige code in Ponytail Safe die `child_process` gebruikt, en alleen voor die ene `spawnSync(process.execPath, [...vlaggen, script])`. Het script leest de invoer van de hook niet en gebruikt geen shell; stdin, stdout en stderr gaan direct door naar de hook in de sandbox. Een test controleert dat dit zo blijft.
 
 ### Rechten per hook (afgedwongen door Node)
 
@@ -49,17 +57,19 @@ Wel ruim de risico's hieronder. Ernst: H = hoog, M = middel, L = laag.
 | PreToolUse (`guard.js`) | alleen de plug-in | niets |
 
 De OS-grens is grover dan de code. SessionStart mag bijvoorbeeld de projectmap lezen, maar de code doet dat alleen als de map aanstaat.
-Beide lagen worden apart getest.
+Beide lagen worden apart getest. `/ponytail doctor` laat op je eigen machine zien welke rechten een hook kreeg.
 
 ## 3. Bewijs: tests
 
-`node --test ponytail-safe/tests/*.test.js` draait 18 tests. Ze voeren het **echte** commando uit `hooks/hooks.json` uit via bash, dus mét de sandbox-vlaggen, in een tijdelijke nep-thuismap.
+`node --test ponytail-safe/tests/*.test.js` draait 22 tests. Ze voeren het **echte** commando uit `hooks/hooks.json` uit, dus via `launch.js` en mét de sandbox, in een tijdelijke nep-thuismap. Eén test draait de hook ook zonder shell en met een datamap vol spaties en shelltekens.
 Elke hook-run draait met `tests/tripwire.js` ervoor geladen: dat meldt en blokkeert elke aanroep van `net`, `tls`, `http(s)`, `http2`, `dgram`, `dns`, `child_process`, `fetch` en `WebSocket`.
 
 | Garantie | Test |
 |----------|------|
 | Runtime-code gebruikt alleen `fs`, `path`, `os`, `crypto`, `string_decoder` | statische scan, ook op `eval`, `new Function`, dynamische `import()`/`require` |
-| Elke hook draait onder `node --permission`, schrijft alleen in zijn eigen map, krijgt geen subprocess-, worker- of addon-rechten | manifestcontrole |
+| Elke hook draait onder `node --permission`, schrijft alleen in zijn eigen map, krijgt geen subprocess-, worker- of addon-rechten | controle van de vlaggen die `launch.js` per hook bouwt |
+| `launch.js` start alleen deze Node, met één `spawnSync`, zonder shell en zonder de invoer te lezen | statische controle van `launch.js` |
+| Een fout bij opslaan wordt gemeld en niet ingeslikt; `/ponytail doctor` toont of de sandbox aanstaat | doctor-test, met en zonder sandbox |
 | De sandbox en de tripwire werken echt | twee positieve controles: een probe die buiten de sandbox leest krijgt `ERR_ACCESS_DENIED`, een `https.get` wordt gevangen |
 | Safe: geen map, geen audit, geen schrijfacties buiten de eigen map | bestandsboom vóór en na vergeleken |
 | Het grootboek bevat geen prompt- of antwoordtekst, staat op 0600 en rekent kosten correct | nep-transcript met geheime tekst |
@@ -84,7 +94,8 @@ Na het toevoegen van de defence-in-depth-test vangen de tests ze alle elf.
 
 ## 4. Bekende grenzen (eerlijk)
 
-- **Node 22.13 of nieuwer is vereist**, voor `--permission`. Op een oudere Node faalt de hook en injecteert hij niets (dicht falen). Windows zonder bash wordt niet ondersteund, omdat de commando's `${VAR:-default}` gebruiken.
+- **Node 22.13 of nieuwer is vereist**, voor `--permission`. Op een oudere Node faalt de hook en injecteert hij niets (dicht falen). Sinds 1.0.1 werken de hooks ook op Windows zonder bash. Getest op Linux en in de praktijk op Windows; de testsuite zelf draait alleen op Linux.
+- **`launch.js` draait buiten de sandbox.** Het is ~50 regels, leest geen invoer en start alleen Node zelf. Wie deze plug-inmap kan wijzigen, kan het aanpassen, maar dat geldt voor elke plug-in.
 - **Het permissiemodel van Node beperkt bestanden, subprocessen en workers, maar geen netwerk.** Dat er geen netwerkverkeer is, rust op de statische scan en de tripwire-tests, niet op een runtime-blokkade.
 - **De guard werkt op patronen.** Een eerder aangemaakte symlink naar de datamap, of een verhuld shellcommando (bijvoorbeeld base64), kan erlangs. Hij is een tweede verdedigingslinie. De eerste is dat toestemming alleen uit een getypte prompt komt.
 - **De auditlog is niet fraudebestendig.** Wie als jouw gebruiker schrijfrechten heeft, kan hem aanpassen. Hij is bedoeld voor overzicht, niet voor forensisch onderzoek.

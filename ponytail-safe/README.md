@@ -36,7 +36,7 @@ Sluit daarna je terminal en de Claude-app helemaal af (ook in het systeemvak), o
 
 ### Werkt het niet?
 
-Geeft `/ponytail status` geen dashboard, controleer dan eerst `node -v` (22.13 of nieuwer). Is dat in orde, start Claude Code dan met `claude --debug` en zoek in de uitvoer naar regels met `hook` of `ponytail`.
+Geeft `/ponytail status` geen dashboard, controleer dan eerst `node -v` (22.13 of nieuwer). Typ daarna `/ponytail doctor`: dat laat zien of de sandbox aanstaat en of de hook je datamap mag lezen en schrijven. Helpt dat niet, start Claude Code dan met `claude --debug` en zoek naar regels met `ponytail-safe:`.
 
 In deze repo staat Ponytail Safe al aan via `.claude/settings.json`: Claude Code vraagt bij het openen van de repo of je de marketplace vertrouwt en installeert de plug-in daarna.
 
@@ -52,6 +52,7 @@ claude --plugin-dir ./ponytail-safe
 |----------|--------------|
 | `/ponytail [lite\|full\|ultra\|off]` | Codeermodus voor deze sessie. `full` is de standaard. "stop ponytail" zet hem uit. |
 | `/ponytail status` | Dashboard: niveau, functies, kosten, tokens en beurten per project. |
+| `/ponytail doctor` | Wat de sandbox de hooks toestaat: om een installatie te controleren. |
 | `/ponytail level safe\|controlled\|developer` | Veiligheidsniveau. Blijft bewaard. |
 | `/ponytail allow <functie>` / `/ponytail deny <functie>` | Toestemming per functie. |
 | `/ponytail default lite\|full\|ultra\|off` | De modus waarin nieuwe sessies starten. |
@@ -100,4 +101,4 @@ Voeg aan `~/.claude/settings.json` toe:
 node --test ponytail-safe/tests/*.test.js
 ```
 
-18 tests, waaronder de sandbox, een netwerk- en subprocess-tripwire, prompt-injectie, de guard en CSV-injectie. Zie SECURITY.md voor de volledige lijst en de mutatietest.
+22 tests, waaronder de sandbox, het startscript, een netwerk- en subprocess-tripwire, prompt-injectie, de guard en CSV-injectie. Zie SECURITY.md voor de volledige lijst en de mutatietest.

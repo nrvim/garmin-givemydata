@@ -24,12 +24,19 @@ function sandbox() {
 
 const commandFor = (event) => HOOKS[event][0].hooks[0].command;
 
+const envFor = (sb) => ({ PATH: process.env.PATH, HOME: sb.home, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PROJECT_DIR: sb.project });
+
+// The sandbox flags the launcher would use for every hook, worked out in the sandbox's environment.
+function flagsIn(sb) {
+  const code = `const l=require(${JSON.stringify(path.join(ROOT, 'hooks', 'launch.js'))});` +
+    'console.log(JSON.stringify(Object.fromEntries(Object.keys(l.HOOKS).map((n)=>[n,l.flagsFor(n)]))))';
+  const r = spawnSync(process.execPath, ['-e', code], { env: envFor(sb), cwd: sb.project, encoding: 'utf8' });
+  return JSON.parse(r.stdout);
+}
+
 // Runs the production hook command (permission flags included) through bash, with the tripwire preloaded.
 function runHook(sb, event, input, { tripwire = true, raw } = {}) {
-  const env = {
-    PATH: process.env.PATH, HOME: sb.home, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PROJECT_DIR: sb.project,
-    NODE_OPTIONS: tripwire ? `--require ${path.join(__dirname, 'tripwire.js')}` : '',
-  };
+  const env = { ...envFor(sb), NODE_OPTIONS: tripwire ? `--require ${path.join(__dirname, 'tripwire.js')}` : '' };
   const stdin = raw !== undefined ? raw : JSON.stringify({ cwd: sb.project, session_id: 'sess-1', ...input });
   const r = spawnSync('bash', ['-c', commandFor(event)], { input: stdin, env, cwd: sb.project, encoding: 'utf8', timeout: 30000 });
   let json = null;
@@ -68,4 +75,4 @@ function writeTranscript(sb, id, { prompt: text = 'my secret plan: password hunt
   return file;
 }
 
-module.exports = { ROOT, HOOKS, sandbox, runHook, prompt, tree, changed, writeTranscript, commandFor };
+module.exports = { ROOT, HOOKS, sandbox, runHook, prompt, tree, changed, writeTranscript, commandFor, flagsIn };

@@ -49,10 +49,33 @@ function dashboard(cfg, project) {
   ].join('\n');
 }
 
+// What the sandbox let this hook do, so a broken install can be diagnosed without guessing.
+function doctor(cfg) {
+  const os = require('os');
+  const perm = process.permission;
+  const can = (scope, p) => (perm ? (perm.has(scope, p) ? 'yes' : 'NO') : 'no sandbox');
+  const data = lib.dataDir();
+  let saved = 'no config.json yet';
+  try { saved = fs.statSync(lib.configPath()).isFile() ? 'config.json present' : saved; } catch (e) { /* none */ }
+  return [
+    'PONYTAIL SAFE DOCTOR. Show the block below to the user exactly as it is, in a code block, then stop. Change nothing.',
+    '',
+    `node ${process.version} on ${process.platform} · sandbox ${perm ? 'on' : 'OFF'} · level ${cfg.level}`,
+    `HOME=${process.env.HOME || '(not set)'} · home folder ${os.homedir()}`,
+    `data folder   ${data}  (${saved})`,
+    `  may read    ${can('fs.read', data)}`,
+    `  may write   ${can('fs.write', data)}`,
+    `plugin        ${lib.pluginRoot()}  may read ${can('fs.read', lib.pluginRoot())}`,
+    `transcripts   ${lib.projectsDir()}  may read ${can('fs.read', lib.projectsDir())}`,
+    `flags         ${process.execArgv.filter((a) => a.startsWith('--')).join(' ') || '(none)'}`,
+  ].join('\n');
+}
+
 function help() {
   return 'PONYTAIL SAFE COMMANDS. Show this list to the user:\n' +
     '  /ponytail [lite|full|ultra|off]   coding mode for this session\n' +
     '  /ponytail status                  dashboard: level, features, cost and tokens\n' +
+    '  /ponytail doctor                  what the sandbox lets the hooks do (for a broken install)\n' +
     '  /ponytail level safe|controlled|developer\n' +
     '  /ponytail allow <feature> | /ponytail deny <feature>\n' +
     '  /ponytail default lite|full|ultra|off\n' +
@@ -117,6 +140,7 @@ function handle(cfg, project, args) {
   }
   if (cmd === 'status' || cmd === 'dashboard') return dashboard(cfg, project);
   if (cmd === 'help') return help();
+  if (cmd === 'doctor') return doctor(cfg);
   if (cmd === 'default') {
     if (!lib.MODES.includes(arg)) return say('unknown mode "' + arg + '". Use lite, full, ultra or off.');
     cfg.defaultMode = arg;
@@ -167,6 +191,13 @@ lib.readInput((input) => {
   }
   const m = prompt.match(CMD);
   if (!m || /\n/.test(prompt)) return; // one line only: a pasted block never counts as a command
-  const out = handle(cfg, project, m[1] || '');
+  let out;
+  try {
+    out = handle(cfg, project, m[1] || '');
+  } catch (e) {
+    // Say so instead of failing silently: a command that changed nothing must not look like it worked.
+    out = `PONYTAIL SAFE: the command failed (${e.code || e.name}: ${e.message}). Nothing was changed. ` +
+      'Tell the user this in one line and suggest `/ponytail doctor`.';
+  }
   if (out) lib.output('UserPromptSubmit', out);
 });

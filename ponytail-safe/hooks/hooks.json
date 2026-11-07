@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --permission --allow-fs-read=\"${CLAUDE_PLUGIN_ROOT}/*\" --allow-fs-read=\"${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*\" --allow-fs-read=\"${CLAUDE_PROJECT_DIR:-$PWD}/*\" --allow-fs-write=\"${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*\" \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.js\" session-start",
             "timeout": 10,
             "statusMessage": "Loading Ponytail Safe..."
           }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --permission --allow-fs-read=\"${CLAUDE_PLUGIN_ROOT}/*\" --allow-fs-read=\"${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*\" --allow-fs-read=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*\" --allow-fs-write=\"${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*\" \"${CLAUDE_PLUGIN_ROOT}/hooks/prompt.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.js\" prompt",
             "timeout": 30
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --permission --allow-fs-read=\"${CLAUDE_PLUGIN_ROOT}/*\" --allow-fs-read=\"${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*\" \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.js\" subagent",
             "timeout": 10
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --permission --allow-fs-read=\"${CLAUDE_PLUGIN_ROOT}/*\" --allow-fs-read=\"${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*\" --allow-fs-read=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*\" --allow-fs-write=\"${XDG_CONFIG_HOME:-$HOME/.config}/ponytail-safe/*\" \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.js\" stop",
             "timeout": 15
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --permission --allow-fs-read=\"${CLAUDE_PLUGIN_ROOT}/*\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.js\" guard",
             "timeout": 5
           }
         ]
