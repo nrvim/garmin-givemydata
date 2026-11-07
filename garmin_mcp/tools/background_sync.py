@@ -3,6 +3,7 @@
 import json
 import logging
 import threading
+from contextlib import closing
 from datetime import date
 
 from ..db import get_connection, query
@@ -101,8 +102,7 @@ def _get_data_freshness() -> dict:
     from datetime import datetime, timezone
 
     today = str(date.today())
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         freshness = query(
             conn,
             """SELECT 'daily_summary' AS source, MAX(calendar_date) AS latest FROM daily_summary
@@ -148,8 +148,6 @@ def _get_data_freshness() -> dict:
             "last_sync": last_sync[0] if last_sync else None,
             "last_sync_ago": last_sync_ago,
         }
-    finally:
-        conn.close()
 
 
 def garmin_sync(refresh: bool = True) -> str:

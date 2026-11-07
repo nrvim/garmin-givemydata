@@ -1,6 +1,7 @@
 """Daily health metrics: sleep, HRV, body battery, stress, heart rate, SpO2 and more."""
 
 import json
+from contextlib import closing
 from datetime import date, timedelta
 
 from ..db import get_connection, query
@@ -15,8 +16,7 @@ def garmin_sleep(start_date: str = "", days: int = 7) -> str:
         start_date = str(date.today() - timedelta(days=days - 1))
     end_date = str(date.today())
 
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date,
@@ -56,8 +56,6 @@ def garmin_sleep(start_date: str = "", days: int = 7) -> str:
             [start_date, end_date],
         )
         return json.dumps({"period": {"start": start_date, "end": end_date}, "nights": rows}, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_hrv(days: int = 30) -> str:
@@ -68,8 +66,7 @@ def garmin_hrv(days: int = 30) -> str:
     trend direction, and whether current values are above/below baseline.
     """
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date, weekly_avg, last_night, last_night_avg,
@@ -129,8 +126,6 @@ def garmin_hrv(days: int = 30) -> str:
             "daily": rows,
         }
         return json.dumps(result, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_body_battery(days: int = 14) -> str:
@@ -141,8 +136,7 @@ def garmin_body_battery(days: int = 14) -> str:
     and whether sleep quality (deep sleep) correlated with better charging.
     """
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT bb.calendar_date,
@@ -184,8 +178,6 @@ def garmin_body_battery(days: int = 14) -> str:
             "daily": rows,
         }
         return json.dumps(result, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_stress(days: int = 14) -> str:
@@ -195,8 +187,7 @@ def garmin_stress(days: int = 14) -> str:
     in each stress zone, plus max stress spikes and the stress qualifier.
     """
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT s.calendar_date,
@@ -227,8 +218,6 @@ def garmin_stress(days: int = 14) -> str:
             "daily": rows,
         }
         return json.dumps(result, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_heart_rate(days: int = 30) -> str:
@@ -240,8 +229,7 @@ def garmin_heart_rate(days: int = 30) -> str:
     """
     # Fetch extra days for the rolling average
     start = str(date.today() - timedelta(days=days + 7))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT hr.calendar_date, hr.resting_hr AS rhr,
@@ -302,8 +290,6 @@ def garmin_heart_rate(days: int = 30) -> str:
             "daily": output,
         }
         return json.dumps(result, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_spo2(days: int = 14) -> str:
@@ -314,8 +300,7 @@ def garmin_spo2(days: int = 14) -> str:
     Includes both daily_summary and dedicated spo2 table data.
     """
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date,
@@ -349,8 +334,6 @@ def garmin_spo2(days: int = 14) -> str:
             "daily": rows,
         }
         return json.dumps(result, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_hydration(days: int = 30) -> str:
@@ -361,8 +344,7 @@ def garmin_hydration(days: int = 30) -> str:
     days with significant under-hydration.
     """
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date,
@@ -389,8 +371,6 @@ def garmin_hydration(days: int = 30) -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_respiration(days: int = 14) -> str:
@@ -400,8 +380,7 @@ def garmin_respiration(days: int = 14) -> str:
     cardiovascular strain. Normal adult range is 12-20 breaths/min.
     """
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date,
@@ -428,8 +407,6 @@ def garmin_respiration(days: int = 14) -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_intensity_minutes(days: int = 30) -> str:
@@ -439,8 +416,7 @@ def garmin_intensity_minutes(days: int = 30) -> str:
     WHO guidelines). Shows weekly totals and goal attainment.
     """
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT strftime('%%Y-W%%W', calendar_date) AS week,
@@ -464,15 +440,12 @@ def garmin_intensity_minutes(days: int = 30) -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_floors(days: int = 14) -> str:
     """Daily floors climbed vs goal, with ascent/descent breakdown."""
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date,
@@ -503,8 +476,6 @@ def garmin_floors(days: int = 14) -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_steps(days: int = 14) -> str:
@@ -514,8 +485,7 @@ def garmin_steps(days: int = 14) -> str:
     consecutive streak of meeting your step goal.
     """
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT d.calendar_date,
@@ -558,8 +528,6 @@ def garmin_steps(days: int = 14) -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_calories(days: int = 14) -> str:
@@ -569,8 +537,7 @@ def garmin_calories(days: int = 14) -> str:
     for a complete energy picture.
     """
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date,
@@ -609,8 +576,6 @@ def garmin_calories(days: int = 14) -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_health_snapshot() -> str:
@@ -619,8 +584,7 @@ def garmin_health_snapshot() -> str:
     These are manual measurements taken via the watch's Health Snapshot
     feature, capturing HR, HRV, SpO2, stress, and respiration simultaneously.
     """
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date, activity_name, wellness_activity_type,
@@ -654,15 +618,12 @@ def garmin_health_snapshot() -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()
 
 
 def garmin_daily_events(days: int = 7) -> str:
     """Daily events detected by your Garmin (stress spikes, body battery events, etc)."""
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date, activity_type, activity_sub_type,
@@ -693,8 +654,6 @@ def garmin_daily_events(days: int = 7) -> str:
             parsed.append(entry)
 
         return json.dumps(parsed, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_wellness_activity(days: int = 30) -> str:
@@ -704,8 +663,7 @@ def garmin_wellness_activity(days: int = 30) -> str:
     activities, including start/end times and activity type.
     """
     start = str(date.today() - timedelta(days=days - 1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         rows = query(
             conn,
             """SELECT calendar_date, activity_name, wellness_activity_type,
@@ -724,5 +682,3 @@ def garmin_wellness_activity(days: int = 30) -> str:
             indent=2,
             default=str,
         )
-    finally:
-        conn.close()

@@ -2,6 +2,7 @@
 
 import json
 import logging
+from contextlib import closing
 
 from ..db import get_connection, query, query_readonly
 
@@ -11,8 +12,7 @@ log = logging.getLogger("garmin_mcp.server")
 
 def garmin_schema() -> str:
     """Show all tables, their columns, and row counts."""
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         tables = query(
             conn,
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
@@ -29,8 +29,6 @@ def garmin_schema() -> str:
                 "row_count": row_count,
             }
         return json.dumps(result, indent=2)
-    finally:
-        conn.close()
 
 
 def garmin_query(sql: str, limit: int = 1000) -> str:

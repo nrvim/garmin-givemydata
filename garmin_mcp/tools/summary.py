@@ -1,6 +1,7 @@
 """Cross-domain overviews: health summary, today, week, trends and period comparison."""
 
 import json
+from contextlib import closing
 from datetime import date, timedelta
 
 from ..db import get_connection, query
@@ -19,8 +20,7 @@ def garmin_health_summary(start_date: str = "", end_date: str = "", days: int = 
     if not start_date:
         start_date = str(date.today() - timedelta(days=days - 1))
 
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         daily_rows = query(
             conn,
             """
@@ -120,8 +120,6 @@ def garmin_health_summary(start_date: str = "", end_date: str = "", days: int = 
             "race_predictions": race_rows[0] if race_rows else {},
         }
         return json.dumps(result, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 _TREND_METRICS = {
@@ -262,14 +260,12 @@ def garmin_trends(metric: str, period: str = "month") -> str:
         ORDER BY period
     """
 
-    conn = get_connection()
-    try:
-        rows = query(conn, sql)
-        return json.dumps({"metric": metric, "period": period, "data": rows}, indent=2, default=str)
-    except Exception as exc:
-        return json.dumps({"error": str(exc)})
-    finally:
-        conn.close()
+    with closing(get_connection()) as conn:
+        try:
+            rows = query(conn, sql)
+            return json.dumps({"metric": metric, "period": period, "data": rows}, indent=2, default=str)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
 
 
 def garmin_today() -> str:
@@ -279,8 +275,7 @@ def garmin_today() -> str:
     """
     today = str(date.today())
     yesterday = str(date.today() - timedelta(days=1))
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         daily = query(
             conn,
             """SELECT total_steps, resting_heart_rate, min_heart_rate, max_heart_rate,
@@ -365,8 +360,6 @@ def garmin_today() -> str:
             "last_activity": last_activity[0] if last_activity else {},
         }
         return json.dumps(result, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_compare(
@@ -380,8 +373,7 @@ def garmin_compare(
     Useful for week-over-week, month-over-month, or year-over-year analysis.
     Returns deltas and percentage changes for every metric.
     """
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
 
         def _fetch_period(start: str, end: str) -> dict:
             daily = query(
@@ -454,8 +446,6 @@ def garmin_compare(
                 deltas[key] = {"period1": v1, "period2": v2, "delta": diff, "pct_change": pct}
 
         return json.dumps({"period1": p1, "period2": p2, "changes": deltas}, indent=2, default=str)
-    finally:
-        conn.close()
 
 
 def garmin_week_summary() -> str:
@@ -469,8 +459,7 @@ def garmin_week_summary() -> str:
     start = str(monday)
     end = str(today)
 
-    conn = get_connection()
-    try:
+    with closing(get_connection()) as conn:
         days = query(
             conn,
             """SELECT calendar_date,
@@ -522,5 +511,3 @@ def garmin_week_summary() -> str:
             "daily": days,
         }
         return json.dumps(result, indent=2, default=str)
-    finally:
-        conn.close()
