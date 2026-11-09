@@ -13,12 +13,36 @@ from pathlib import Path
 import httpx
 import uvicorn
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.responses import Response
 
 BASE_URL = os.environ.get("BASE_URL", "https://solid-palm-tree-5g74wjx94vq9hv5x7-8000.app.github.dev")
 CODES = {}
 TOKEN_FILE = Path(os.environ.get("GARMIN_DATA_DIR", ".")) / "oauth_tokens.json"
+ENV_FILE = Path(os.environ.get("GARMIN_DATA_DIR", ".")) / ".env"
+
+
+def load_password() -> str:
+    """MCP_PASSWORD from the environment, or from the .env file next to the data."""
+    if os.environ.get("MCP_PASSWORD"):
+        return os.environ["MCP_PASSWORD"]
+    try:
+        for line in ENV_FILE.read_text().splitlines():
+            key, _, value = line.strip().partition("=")
+            if key.strip() == "MCP_PASSWORD":
+                return value.strip()
+    except Exception:
+        pass
+    return ""
+
+
+MCP_PASSWORD = load_password()
+if not MCP_PASSWORD:
+    print(
+        "WARNING: MCP_PASSWORD is not set - new connector logins are refused.\n"
+        "         Add a line MCP_PASSWORD=<your password> to .env and restart.",
+        flush=True,
+    )
 
 
 def load_tokens():
@@ -81,6 +105,39 @@ async def register(request: Request):
     return JSONResponse({"client_id": client_id, "client_secret": "none", **body})
 
 
+_LOGIN_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Garmin MCP</title>
+<style>body{{font-family:system-ui,sans-serif;max-width:360px;margin:15vh auto;padding:0 16px}}
+input,button{{width:100%;padding:12px;margin-top:10px;font-size:16px;box-sizing:border-box}}
+.err{{color:#b00020}}</style></head><body>
+<h2>Garmin MCP</h2><p>Voer het wachtwoord in om Claude toegang te geven.</p>{error}
+<form method="post" action="/oauth/authorize">
+<input type="hidden" name="redirect_uri" value="{redirect_uri}">
+<input type="hidden" name="state" value="{state}">
+<input type="hidden" name="client_id" value="{client_id}">
+<input type="hidden" name="code_challenge" value="{code_challenge}">
+<input type="password" name="password" placeholder="Wachtwoord" autofocus required>
+<button type="submit">Toegang geven</button></form></body></html>"""
+
+_FAILED_ATTEMPTS = []
+
+
+def _login_page(redirect_uri, state, client_id, code_challenge, error=""):
+    from html import escape
+
+    if not MCP_PASSWORD:
+        error = '<p class="err">Server heeft geen MCP_PASSWORD ingesteld; inloggen is uitgeschakeld.</p>'
+    return HTMLResponse(
+        _LOGIN_PAGE.format(
+            error=error,
+            redirect_uri=escape(redirect_uri),
+            state=escape(state),
+            client_id=escape(client_id),
+            code_challenge=escape(code_challenge),
+        )
+    )
+
+
 @app.get("/oauth/authorize")
 async def authorize(
     request: Request,
@@ -91,10 +148,32 @@ async def authorize(
     code_challenge: str = "",
     code_challenge_method: str = "",
 ):
+    return _login_page(redirect_uri, state, client_id, code_challenge)
+
+
+@app.post("/oauth/authorize")
+async def authorize_submit(
+    password: str = Form(""),
+    client_id: str = Form(""),
+    redirect_uri: str = Form(""),
+    state: str = Form(""),
+    code_challenge: str = Form(""),
+):
+    # Slow down guessing: at most 5 failed attempts per 10 minutes
+    now = time.time()
+    _FAILED_ATTEMPTS[:] = [t for t in _FAILED_ATTEMPTS if now - t < 600]
+    if len(_FAILED_ATTEMPTS) >= 5:
+        return HTMLResponse("Te veel pogingen. Probeer het over 10 minuten opnieuw.", status_code=429)
+    if not MCP_PASSWORD or not secrets.compare_digest(password.encode(), MCP_PASSWORD.encode()):
+        _FAILED_ATTEMPTS.append(now)
+        return _login_page(redirect_uri, state, client_id, code_challenge, '<p class="err">Onjuist wachtwoord.</p>')
     code = secrets.token_hex(16)
     CODES[code] = {"redirect_uri": redirect_uri, "challenge": code_challenge, "client_id": client_id}
+    from urllib.parse import urlencode
+
     sep = "&" if "?" in redirect_uri else "?"
-    return RedirectResponse(f"{redirect_uri}{sep}code={code}&state={state}")
+    query = urlencode({"code": code, "state": state})
+    return RedirectResponse(f"{redirect_uri}{sep}{query}", status_code=303)
 
 
 @app.post("/oauth/token")
